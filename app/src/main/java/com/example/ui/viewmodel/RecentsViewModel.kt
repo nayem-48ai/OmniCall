@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.AppContainer
 import com.example.data.repository.CallLogItem
+import com.example.data.repository.ContactItem
 import com.example.domain.model.CallDirection
 import com.example.domain.model.CallSourceType
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,15 +21,22 @@ enum class RecentsFilter(val label: String) {
     SIM("Cellular SIM")
 }
 
+data class EnrichedCallLogItem(
+    val log: CallLogItem,
+    val displayName: String,
+    val photoUri: String?
+)
+
 data class CallHistoryDetail(
     val remoteHandle: String,
     val displayName: String,
+    val photoUri: String?,
     val entries: List<CallLogItem>
 )
 
 data class RecentsUiState(
     val filter: RecentsFilter = RecentsFilter.ALL,
-    val items: List<CallLogItem> = emptyList(),
+    val items: List<EnrichedCallLogItem> = emptyList(),
     val selectedHistory: CallHistoryDetail? = null
 )
 
@@ -36,31 +44,64 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
 
     private val _filter = MutableStateFlow(RecentsFilter.ALL)
     private val _selectedHandle = MutableStateFlow<String?>(null)
+    private val _contactsLookup = MutableStateFlow<Map<String, ContactItem>>(emptyMap())
+
+    init {
+        refreshContactsIndex()
+    }
+
+    fun refreshContactsIndex() {
+        if (!container.contactsRepository.hasContactsPermission()) return
+        viewModelScope.launch {
+            val contacts = container.contactsRepository.loadContacts()
+            val map = hashMapOf<String, ContactItem>()
+            contacts.forEach { contact ->
+                contact.phoneNumbers.forEach { phone ->
+                    val key = normalizeForMatch(phone.number)
+                    if (key.isNotEmpty()) map[key] = contact
+                }
+            }
+            _contactsLookup.value = map
+        }
+    }
 
     val uiState: StateFlow<RecentsUiState> = combine(
         _filter,
         container.callLogRepository.recentCallsFlow,
-        _selectedHandle
-    ) { filter, logs, selectedHandle ->
+        _selectedHandle,
+        _contactsLookup
+    ) { filter, logs, selectedHandle, contactMap ->
         val filtered = when (filter) {
             RecentsFilter.ALL -> logs
             RecentsFilter.MISSED -> logs.filter { it.direction == CallDirection.MISSED }
             RecentsFilter.SIP -> logs.filter { it.sourceType == CallSourceType.SIP }
             RecentsFilter.SIM -> logs.filter { it.sourceType != CallSourceType.SIP }
         }
+        val enriched = filtered.map { log ->
+            val match = contactMap[normalizeForMatch(log.remoteHandle)]
+            EnrichedCallLogItem(
+                log = log,
+                displayName = match?.displayName ?: log.displayName.ifBlank { log.remoteHandle },
+                photoUri = match?.photoUri
+            )
+        }
         val detail = selectedHandle?.let { handle ->
             val targetKey = normalizeForMatch(handle)
             val matching = logs.filter { normalizeForMatch(it.remoteHandle) == targetKey }
-            val bestName = matching.firstOrNull { it.displayName.isNotBlank() }?.displayName ?: handle
+            val matchedContact = contactMap[targetKey]
+            val bestName = matchedContact?.displayName
+                ?: matching.firstOrNull { it.displayName.isNotBlank() }?.displayName
+                ?: handle
             CallHistoryDetail(
                 remoteHandle = handle,
                 displayName = bestName,
+                photoUri = matchedContact?.photoUri,
                 entries = matching
             )
         }
         RecentsUiState(
             filter = filter,
-            items = filtered,
+            items = enriched,
             selectedHistory = detail
         )
     }.stateIn(

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.rounded.Dialpad
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headset
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.Pause
@@ -62,16 +63,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.domain.model.ActiveCallState
 import com.example.domain.model.AudioRouteType
 import com.example.domain.model.CallLifecycleState
+import com.example.ui.components.ContactAvatar
 import com.example.ui.theme.InCallGradientBottom
 import com.example.ui.theme.InCallGradientTop
+import com.example.ui.theme.MonoTelemetryStyle
 import com.example.ui.theme.SignalConnected
 import com.example.ui.theme.SignalRecording
+
+private data class DtmfKey(val digit: Char, val letters: String)
+
+private val DTMF_DIALPAD_ROWS = listOf(
+    listOf(DtmfKey('1', "∞"), DtmfKey('2', "ABC"), DtmfKey('3', "DEF")),
+    listOf(DtmfKey('4', "GHI"), DtmfKey('5', "JKL"), DtmfKey('6', "MNO")),
+    listOf(DtmfKey('7', "PQRS"), DtmfKey('8', "TUV"), DtmfKey('9', "WXYZ")),
+    listOf(DtmfKey('*', ""), DtmfKey('0', "+"), DtmfKey('#', ""))
+)
 
 @Composable
 fun InCallScreen(
@@ -88,6 +101,7 @@ fun InCallScreen(
     modifier: Modifier = Modifier
 ) {
     var showDtmfPad by remember { mutableStateOf(false) }
+    var enteredDtmfDigits by remember { mutableStateOf("") }
     var showAudioMenu by remember { mutableStateOf(false) }
 
     val pulseTransition = rememberInfiniteTransition(label = "call_pulse")
@@ -105,7 +119,7 @@ fun InCallScreen(
                 Brush.verticalGradient(listOf(InCallGradientTop, InCallGradientBottom))
             )
             .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+            .padding(horizontal = 24.dp, vertical = 14.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -147,7 +161,7 @@ fun InCallScreen(
                 AnimatedVisibility(visible = callState.isRecording) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = SignalRecording.copy(alpha = 0.22f)
+                        color = SignalRecording.copy(alpha = 0.25f)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
@@ -164,7 +178,7 @@ fun InCallScreen(
                             )
                             Text(
                                 text = "REC ${formatElapsed(callState.recordingDurationSec)}",
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MonoTelemetryStyle,
                                 color = Color.White
                             )
                         }
@@ -172,81 +186,108 @@ fun InCallScreen(
                 }
             }
 
-            // Center Caller Avatar & Status Timer
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                val initials = callState.displayName.ifBlank { callState.remoteHandle }
-                    .take(2).uppercase()
-
-                Box(
-                    modifier = Modifier
-                        .size(96.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.14f)),
-                    contentAlignment = Alignment.Center
+            // Caller Info (compact when Google Phone / Zoiper style DTMF pad is open)
+            if (showDtmfPad) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = initials,
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        text = callState.displayName.ifBlank { callState.remoteHandle },
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = when (callState.lifecycle) {
+                            CallLifecycleState.DIALING -> "Dialing..."
+                            CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
+                            CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
+                            CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
+                            else -> ""
+                        },
+                        style = MonoTelemetryStyle,
+                        color = SignalConnected,
+                        modifier = Modifier.testTag("in_call_timer_text")
                     )
                 }
-
-                Text(
-                    text = callState.displayName.ifBlank { callState.remoteHandle },
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Text(
-                    text = callState.remoteHandle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.72f)
-                )
-
-                Text(
-                    text = when (callState.lifecycle) {
-                        CallLifecycleState.DIALING -> "Dialing..."
-                        CallLifecycleState.RINGING_INCOMING -> "Incoming Call"
-                        CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
-                        CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
-                        CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
-                        CallLifecycleState.ENDED -> "Call Ended"
-                        CallLifecycleState.IDLE -> ""
-                    },
-                    style = MaterialTheme.typography.titleLarge,
-                    color = SignalConnected,
-                    modifier = Modifier.testTag("in_call_timer_text")
-                )
-
-                // Hardware AEC/NS/Codec Telemetry Badge
-                val t = callState.telemetry
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color.White.copy(alpha = 0.08f)
+            } else {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val dspFlags = buildList {
-                        add(t.codecName)
-                        if (t.aecActive) add("AEC")
-                        if (t.nsActive) add("NS")
-                        if (t.agcActive) add("AGC")
-                        if (t.jitterMs > 0) add("${t.jitterMs}ms jitter")
-                    }.joinToString(" • ")
-                    Text(
-                        text = dspFlags,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ContactAvatar(
+                        displayName = callState.displayName.ifBlank { callState.remoteHandle },
+                        photoUri = callState.remotePhotoUri,
+                        size = 96.dp,
+                        fontSize = 32.sp,
+                        containerColor = Color.White.copy(alpha = 0.14f),
+                        contentColor = Color.White,
+                        borderColor = Color.White.copy(alpha = 0.28f)
                     )
+
+                    Text(
+                        text = callState.displayName.ifBlank { callState.remoteHandle },
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Text(
+                        text = callState.remoteHandle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.72f)
+                    )
+
+                    Text(
+                        text = when (callState.lifecycle) {
+                            CallLifecycleState.DIALING -> "Dialing..."
+                            CallLifecycleState.RINGING_INCOMING -> "Incoming Call"
+                            CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
+                            CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
+                            CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
+                            CallLifecycleState.ENDED -> "Call Ended"
+                            CallLifecycleState.IDLE -> ""
+                        },
+                        style = MaterialTheme.typography.titleLarge,
+                        color = SignalConnected,
+                        modifier = Modifier.testTag("in_call_timer_text")
+                    )
+
+                    // Hardware AEC/NS/Codec Telemetry Badge
+                    val t = callState.telemetry
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.White.copy(alpha = 0.08f)
+                    ) {
+                        val dspFlags = buildList {
+                            add(t.codecName)
+                            if (t.aecActive) add("AEC")
+                            if (t.nsActive) add("NS")
+                            if (t.agcActive) add("AGC")
+                            if (t.jitterMs > 0) add("${t.jitterMs}ms jitter")
+                        }.joinToString(" • ")
+                        Text(
+                            text = dspFlags,
+                            style = MonoTelemetryStyle.copy(fontSize = 11.sp),
+                            color = Color.White.copy(alpha = 0.8f),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+
+                    callState.statusMessage?.let { msg ->
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.78f)
+                        )
+                    }
                 }
             }
 
-            // Bottom Action Controls (Incoming vs Active)
+            // Bottom Action Controls (Incoming vs Keypad vs Standard 6-tile Grid)
             if (callState.lifecycle == CallLifecycleState.RINGING_INCOMING) {
                 Row(
                     modifier = Modifier
@@ -291,16 +332,105 @@ fun InCallScreen(
                         Text("Answer", color = Color.White, style = MaterialTheme.typography.labelLarge)
                     }
                 }
+            } else if (showDtmfPad) {
+                // Google Phone / Zoiper-style full regular In-Call Dialpad
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (enteredDtmfDigits.isEmpty()) "Tap keys to send tones" else enteredDtmfDigits.takeLast(18),
+                        style = if (enteredDtmfDigits.isEmpty()) {
+                            MaterialTheme.typography.bodyMedium
+                        } else {
+                            MaterialTheme.typography.headlineMedium
+                        },
+                        color = if (enteredDtmfDigits.isEmpty()) {
+                            Color.White.copy(alpha = 0.55f)
+                        } else {
+                            Color.White
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .testTag("in_call_dtmf_display")
+                    )
+
+                    InCallRegularDialpad(
+                        onDigit = { digit ->
+                            enteredDtmfDigits += digit
+                            onSendDtmf(digit)
+                        }
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Spacer(modifier = Modifier.width(88.dp))
+
+                        FilledIconButton(
+                            onClick = onEndCall,
+                            modifier = Modifier
+                                .size(width = 84.dp, height = 64.dp)
+                                .testTag("in_call_end_button"),
+                            shape = RoundedCornerShape(32.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = SignalRecording,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.CallEnd,
+                                contentDescription = "End Call",
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = Color.White.copy(alpha = 0.14f),
+                            modifier = Modifier
+                                .width(88.dp)
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(50))
+                                .clickable { showDtmfPad = false }
+                                .testTag("in_call_hide_keypad_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxSize(),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.KeyboardArrowDown,
+                                    contentDescription = "Hide keypad",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Hide",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
             } else {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(18.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    AnimatedVisibility(visible = showDtmfPad) {
-                        InCallDtmfPad(onDigit = onSendDtmf)
-                    }
-
                     // 6-Tile Google Phone Style Control Grid
                     Column(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -320,8 +450,8 @@ fun InCallScreen(
                             CallControlTile(
                                 icon = Icons.Rounded.Dialpad,
                                 label = "Keypad",
-                                active = showDtmfPad,
-                                onClick = { showDtmfPad = !showDtmfPad },
+                                active = false,
+                                onClick = { showDtmfPad = true },
                                 testTag = "in_call_keypad_button"
                             )
                             Box {
@@ -358,7 +488,6 @@ fun InCallScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            // Manual Call Recording Toggle (Google Phone Style)
                             CallControlTile(
                                 icon = Icons.Rounded.FiberManualRecord,
                                 label = if (callState.isRecording) "Stop Rec" else "Record",
@@ -388,9 +517,9 @@ fun InCallScreen(
                     FilledIconButton(
                         onClick = onEndCall,
                         modifier = Modifier
-                            .size(72.dp)
+                            .size(width = 84.dp, height = 64.dp)
                             .testTag("in_call_end_button"),
-                        shape = CircleShape,
+                        shape = RoundedCornerShape(32.dp),
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = SignalRecording,
                             contentColor = Color.White
@@ -399,7 +528,7 @@ fun InCallScreen(
                         Icon(
                             imageVector = Icons.Rounded.CallEnd,
                             contentDescription = "End Call",
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                     }
                 }
@@ -438,7 +567,7 @@ private fun CallControlTile(
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                tint = if (active && activeColor == Color.White) Color(0xFF0F172A) else Color.White,
+                tint = if (active && activeColor == Color.White) InCallGradientTop else Color.White,
                 modifier = Modifier.size(26.dp)
             )
         }
@@ -453,43 +582,45 @@ private fun CallControlTile(
 }
 
 @Composable
-private fun InCallDtmfPad(onDigit: (Char) -> Unit) {
-    val rows = listOf(
-        listOf('1', '2', '3'),
-        listOf('4', '5', '6'),
-        listOf('7', '8', '9'),
-        listOf('*', '0', '#')
-    )
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = Color.White.copy(alpha = 0.1f),
-        modifier = Modifier.fillMaxWidth()
+private fun InCallRegularDialpad(onDigit: (Char) -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            rows.forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    row.forEach { digit ->
-                        Box(
-                            modifier = Modifier
-                                .size(width = 76.dp, height = 48.dp)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(Color.White.copy(alpha = 0.12f))
-                                .clickable { onDigit(digit) }
-                                .testTag("dtmf_key_$digit"),
-                            contentAlignment = Alignment.Center
+        DTMF_DIALPAD_ROWS.forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                row.forEach { key ->
+                    Surface(
+                        shape = RoundedCornerShape(31.dp),
+                        color = Color.White.copy(alpha = 0.14f),
+                        modifier = Modifier
+                            .size(width = 88.dp, height = 62.dp)
+                            .clip(RoundedCornerShape(31.dp))
+                            .clickable { onDigit(key.digit) }
+                            .testTag("dtmf_key_${key.digit}")
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
                         ) {
                             Text(
-                                text = digit.toString(),
-                                color = Color.White,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.SemiBold
+                                text = key.digit.toString(),
+                                fontSize = 26.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
                             )
+                            if (key.letters.isNotEmpty()) {
+                                Text(
+                                    text = key.letters,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.sp,
+                                    color = Color.White.copy(alpha = 0.72f)
+                                )
+                            }
                         }
                     }
                 }

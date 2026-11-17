@@ -172,6 +172,7 @@ private fun OmniCallRoot(
         dialerViewModel.refreshHardwareEnvironment()
         settingsViewModel.refreshEnvironment()
         contactsViewModel.refreshContacts()
+        recentsViewModel.refreshContactsIndex()
         if (!promptedDefaultDialerOnce.value && !app.container.telecomCallManager.isDefaultDialer()) {
             promptedDefaultDialerOnce.value = true
             requestDefaultDialer()
@@ -182,6 +183,7 @@ private fun OmniCallRoot(
         contract = ActivityResultContracts.RequestPermission()
     ) {
         contactsViewModel.refreshContacts()
+        recentsViewModel.refreshContactsIndex()
     }
 
     LaunchedEffect(Unit) {

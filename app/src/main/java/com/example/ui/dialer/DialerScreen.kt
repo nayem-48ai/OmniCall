@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -98,100 +99,20 @@ fun DialerScreen(
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Top Status & Dynamic Outgoing Route Switcher Row
+                // Clean Top Brand & SIP Registration Status Row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp),
+                        .padding(top = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box {
-                        Surface(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .clickable(enabled = availableModes.isNotEmpty()) {
-                                    showLineMenu = true
-                                }
-                                .minimumInteractiveComponentSize()
-                                .testTag("outgoing_route_switcher"),
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = when (activeMode) {
-                                        OutgoingRoutingMode.SIP -> Icons.Rounded.WifiCalling3
-                                        else -> Icons.Rounded.SimCard
-                                    },
-                                    contentDescription = "Outgoing call line",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = when {
-                                        availableModes.isEmpty() -> "Configure Line"
-                                        activeMode == OutgoingRoutingMode.SIM_1 ->
-                                            env.simSlots.getOrNull(0)?.shortLabel ?: "SIM 1"
-                                        activeMode == OutgoingRoutingMode.SIM_2 ->
-                                            env.simSlots.getOrNull(1)?.shortLabel ?: "SIM 2"
-                                        activeMode == OutgoingRoutingMode.SIP ->
-                                            defaultSip?.displayName ?: "SIP VoIP"
-                                        else -> "Ask every time"
-                                    },
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                if (availableModes.size > 1) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.ExpandMore,
-                                        contentDescription = "Switch calling route",
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        DropdownMenu(
-                            expanded = showLineMenu,
-                            onDismissRequest = { showLineMenu = false }
-                        ) {
-                            availableModes.forEach { mode ->
-                                val subtitle = when (mode) {
-                                    OutgoingRoutingMode.SIM_1 -> env.simSlots.getOrNull(0)?.carrierName.orEmpty()
-                                    OutgoingRoutingMode.SIM_2 -> env.simSlots.getOrNull(1)?.carrierName.orEmpty()
-                                    OutgoingRoutingMode.SIP -> defaultSip?.sipUri.orEmpty()
-                                    OutgoingRoutingMode.ASK_EVERY_TIME -> "Prompt on each call"
-                                }
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(mode.title, fontWeight = FontWeight.SemiBold)
-                                            if (subtitle.isNotBlank()) {
-                                                Text(
-                                                    subtitle,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.setRoutingMode(mode)
-                                        showLineMenu = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-
+                    Text(
+                        text = "OmniCall",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                     SipStatusPill(
                         status = defaultSip?.status,
                         transportLabel = defaultSip?.transport?.label,
@@ -283,7 +204,7 @@ fun DialerScreen(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .clickable { viewModel.initiateCall(item.remoteHandle) }
-                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -297,7 +218,9 @@ fun DialerScreen(
                             Text(
                                 text = "${item.remoteHandle} • ${item.lineLabel}",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         Icon(
@@ -310,7 +233,7 @@ fun DialerScreen(
                 }
             }
 
-            // Number / SIP URI Display Area
+            // Number / SIP URI Display Area + Keypad + Bottom Action Row
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -318,7 +241,7 @@ fun DialerScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
@@ -371,10 +294,10 @@ fun DialerScreen(
                         } else {
                             Text(
                                 text = uiState.inputNumber.ifEmpty { "Enter number" },
-                                style = if (uiState.inputNumber.length > 13) {
-                                    MaterialTheme.typography.headlineMedium
-                                } else {
-                                    MaterialTheme.typography.displayMedium
+                                style = when {
+                                    uiState.inputNumber.length > 14 -> MaterialTheme.typography.titleLarge
+                                    uiState.inputNumber.length > 10 -> MaterialTheme.typography.headlineMedium
+                                    else -> MaterialTheme.typography.displayMedium
                                 },
                                 color = if (uiState.inputNumber.isEmpty()) {
                                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
@@ -411,7 +334,7 @@ fun DialerScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Tactile 3x4 Keypad
                 Column(
@@ -439,26 +362,127 @@ fun DialerScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Primary Call Button
-                FilledIconButton(
-                    onClick = { viewModel.initiateCall() },
-                    modifier = Modifier
-                        .size(width = 92.dp, height = 60.dp)
-                        .testTag("dialer_call_button"),
-                    shape = RoundedCornerShape(30.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiary,
-                        contentColor = MaterialTheme.colorScheme.onTertiary
-                    )
+                // Bottom Action Row matching 3-column grid:
+                // Left (below *): Outgoing Line Switcher (SIM 1 / SIM 2 / SIP / Ask)
+                // Center (below 0): Primary Call FAB
+                // Right (below #): Symmetric balance slot
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Call,
-                        contentDescription = "Place Call",
-                        modifier = Modifier.size(28.dp)
-                    )
+                    Box(
+                        modifier = Modifier.width(96.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .clickable(enabled = availableModes.isNotEmpty()) {
+                                    showLineMenu = true
+                                }
+                                .minimumInteractiveComponentSize()
+                                .testTag("outgoing_route_switcher"),
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when (activeMode) {
+                                        OutgoingRoutingMode.SIP -> Icons.Rounded.WifiCalling3
+                                        else -> Icons.Rounded.SimCard
+                                    },
+                                    contentDescription = "Outgoing call line",
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = when {
+                                        availableModes.isEmpty() -> "Line"
+                                        activeMode == OutgoingRoutingMode.SIM_1 -> "SIM 1"
+                                        activeMode == OutgoingRoutingMode.SIM_2 -> "SIM 2"
+                                        activeMode == OutgoingRoutingMode.SIP -> "SIP"
+                                        else -> "Ask"
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (availableModes.size > 1) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ExpandMore,
+                                        contentDescription = "Switch calling route",
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = showLineMenu,
+                            onDismissRequest = { showLineMenu = false }
+                        ) {
+                            availableModes.forEach { mode ->
+                                val subtitle = when (mode) {
+                                    OutgoingRoutingMode.SIM_1 -> env.simSlots.getOrNull(0)?.carrierName.orEmpty()
+                                    OutgoingRoutingMode.SIM_2 -> env.simSlots.getOrNull(1)?.carrierName.orEmpty()
+                                    OutgoingRoutingMode.SIP -> defaultSip?.sipUri.orEmpty()
+                                    OutgoingRoutingMode.ASK_EVERY_TIME -> "Prompt on each call"
+                                }
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(mode.title, fontWeight = FontWeight.SemiBold)
+                                            if (subtitle.isNotBlank()) {
+                                                Text(
+                                                    subtitle,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        viewModel.setRoutingMode(mode)
+                                        showLineMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Center Call FAB (below '0')
+                    FilledIconButton(
+                        onClick = { viewModel.initiateCall() },
+                        modifier = Modifier
+                            .size(width = 92.dp, height = 60.dp)
+                            .testTag("dialer_call_button"),
+                        shape = RoundedCornerShape(30.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary,
+                            contentColor = MaterialTheme.colorScheme.onTertiary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Call,
+                            contentDescription = "Place Call",
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    // Right symmetric slot (below '#')
+                    Spacer(modifier = Modifier.width(96.dp))
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
             }
         }
     }

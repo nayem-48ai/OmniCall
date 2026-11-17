@@ -11,7 +11,8 @@ import kotlinx.coroutines.withContext
 
 data class ContactPhoneNumber(
     val number: String,
-    val typeLabel: String
+    val typeLabel: String,
+    val isDefault: Boolean = false
 )
 
 data class ContactItem(
@@ -22,12 +23,20 @@ data class ContactItem(
     val phoneNumbers: List<ContactPhoneNumber>,
     val photoUri: String?
 ) {
-    val primaryNumber: String get() = phoneNumbers.firstOrNull()?.number.orEmpty()
+    val primaryNumber: String
+        get() = phoneNumbers.firstOrNull { it.isDefault }?.number
+            ?: phoneNumbers.firstOrNull()?.number.orEmpty()
 }
+
+data class ContactLookupResult(
+    val displayName: String,
+    val photoUri: String?
+)
 
 /**
  * Queries Android's [ContactsContract] safely for favorite contacts, all contacts,
- * and caller name lookup when [Manifest.permission.READ_CONTACTS] is granted.
+ * default phone numbers (IS_SUPER_PRIMARY / IS_PRIMARY), contact photos (PHOTO_URI),
+ * and fast caller name/photo lookup when [Manifest.permission.READ_CONTACTS] is granted.
  */
 class ContactsRepository(private val context: Context) {
 
@@ -50,7 +59,10 @@ class ContactsRepository(private val context: Context) {
             ContactsContract.CommonDataKinds.Phone.TYPE,
             ContactsContract.CommonDataKinds.Phone.LABEL,
             ContactsContract.CommonDataKinds.Phone.STARRED,
-            ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI
+            ContactsContract.CommonDataKinds.Phone.PHOTO_URI,
+            ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI,
+            ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY,
+            ContactsContract.CommonDataKinds.Phone.IS_PRIMARY
         )
 
         runCatching {
@@ -68,7 +80,10 @@ class ContactsRepository(private val context: Context) {
                 val idxType = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.TYPE)
                 val idxLabel = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.LABEL)
                 val idxStarred = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.STARRED)
-                val idxPhoto = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI)
+                val idxPhotoUri = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_URI)
+                val idxThumbUri = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI)
+                val idxSuperPrimary = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.IS_SUPER_PRIMARY)
+                val idxPrimary = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.IS_PRIMARY)
 
                 while (cursor.moveToNext()) {
                     val contactId = cursor.getLong(idxId)
@@ -84,32 +99,46 @@ class ContactsRepository(private val context: Context) {
                         customLabel
                     ).toString()
                     val starred = cursor.getInt(idxStarred) == 1
-                    val photo = cursor.getString(idxPhoto)
+                    val photoFull = if (idxPhotoUri >= 0) cursor.getString(idxPhotoUri) else null
+                    val photoThumb = if (idxThumbUri >= 0) cursor.getString(idxThumbUri) else null
+                    val photo = photoFull?.takeIf { it.isNotBlank() } ?: photoThumb?.takeIf { it.isNotBlank() }
+                    val isDefaultNumber =
+                        (idxSuperPrimary >= 0 && cursor.getInt(idxSuperPrimary) == 1) ||
+                            (idxPrimary >= 0 && cursor.getInt(idxPrimary) == 1)
 
                     val builder = contactMap.getOrPut(contactId) {
                         MutableContactBuilder(contactId, lookupKey, name, starred, photo)
                     }
+                    if (builder.photoUri == null && photo != null) {
+                        builder.photoUri = photo
+                    }
+
                     val normalizedNew = normalizeDigits(rawNumber)
-                    if (builder.numbers.none { normalizeDigits(it.number) == normalizedNew }) {
-                        builder.numbers.add(ContactPhoneNumber(rawNumber, typeLabel))
+                    val existingIdx = builder.numbers.indexOfFirst { normalizeDigits(it.number) == normalizedNew }
+                    if (existingIdx == -1) {
+                        builder.numbers.add(ContactPhoneNumber(rawNumber, typeLabel, isDefaultNumber))
+                    } else if (isDefaultNumber && !builder.numbers[existingIdx].isDefault) {
+                        builder.numbers[existingIdx] = builder.numbers[existingIdx].copy(isDefault = true)
                     }
                 }
             }
         }
 
-        contactMap.values.map {
+        contactMap.values.map { builder ->
+            // Place default (IS_SUPER_PRIMARY / IS_PRIMARY) phone number first
+            val sortedNumbers = builder.numbers.sortedByDescending { it.isDefault }
             ContactItem(
-                id = it.id,
-                lookupKey = it.lookupKey,
-                displayName = it.displayName,
-                isFavorite = it.isFavorite,
-                phoneNumbers = it.numbers.toList(),
-                photoUri = it.photoUri
+                id = builder.id,
+                lookupKey = builder.lookupKey,
+                displayName = builder.displayName,
+                isFavorite = builder.isFavorite,
+                phoneNumbers = sortedNumbers,
+                photoUri = builder.photoUri
             )
         }
     }
 
-    suspend fun lookupDisplayName(phoneNumber: String): String? = withContext(Dispatchers.IO) {
+    suspend fun lookupContactInfo(phoneNumber: String): ContactLookupResult? = withContext(Dispatchers.IO) {
         if (!hasContactsPermission() || phoneNumber.isBlank()) return@withContext null
         runCatching {
             val uri = Uri.withAppendedPath(
@@ -118,15 +147,32 @@ class ContactsRepository(private val context: Context) {
             )
             context.contentResolver.query(
                 uri,
-                arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME),
+                arrayOf(
+                    ContactsContract.PhoneLookup.DISPLAY_NAME,
+                    ContactsContract.PhoneLookup.PHOTO_URI,
+                    ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI
+                ),
                 null,
                 null,
                 null
             )?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getString(0) else null
+                if (cursor.moveToFirst()) {
+                    val name = cursor.getString(0).orEmpty()
+                    val fullPhoto = cursor.getString(1)?.takeIf { it.isNotBlank() }
+                    val thumbPhoto = cursor.getString(2)?.takeIf { it.isNotBlank() }
+                    if (name.isNotBlank()) {
+                        ContactLookupResult(
+                            displayName = name,
+                            photoUri = fullPhoto ?: thumbPhoto
+                        )
+                    } else null
+                } else null
             }
         }.getOrNull()
     }
+
+    suspend fun lookupDisplayName(phoneNumber: String): String? =
+        lookupContactInfo(phoneNumber)?.displayName
 
     private fun normalizeDigits(number: String): String =
         number.filter { it.isDigit() || it == '+' }
@@ -136,7 +182,7 @@ class ContactsRepository(private val context: Context) {
         val lookupKey: String,
         val displayName: String,
         val isFavorite: Boolean,
-        val photoUri: String?,
+        var photoUri: String?,
         val numbers: MutableList<ContactPhoneNumber> = mutableListOf()
     )
 }

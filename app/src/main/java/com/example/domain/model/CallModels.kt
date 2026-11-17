@@ -151,6 +151,7 @@ data class ActiveCallState(
     val callId: String = "",
     val remoteHandle: String = "",
     val displayName: String = "",
+    val remotePhotoUri: String? = null,
     val sourceType: CallSourceType = CallSourceType.SIM_1,
     val routeBadge: String = "",
     val lifecycle: CallLifecycleState = CallLifecycleState.IDLE,
