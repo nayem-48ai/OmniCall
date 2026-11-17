@@ -1,0 +1,6 @@
+{
+  "name": "OmniCall",
+  "description": "Hybrid native SIM and pure-Kotlin RFC 3261 SIP/VoIP dialer with smart transport auto-discovery, hardware AEC/NS audio processing, and local call recording.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

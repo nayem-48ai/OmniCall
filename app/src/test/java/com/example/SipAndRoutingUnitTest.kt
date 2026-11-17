@@ -1,0 +1,117 @@
+package com.example
+
+import com.example.audio.AudioCodecUtils
+import com.example.domain.model.AvailableCallingEnvironment
+import com.example.domain.model.OutgoingRoutingMode
+import com.example.domain.model.SimSlotInfo
+import com.example.domain.model.SipAccountModel
+import com.example.domain.model.SipTransport
+import com.example.sip.SipMessageCodec
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SipAndRoutingUnitTest {
+
+    @Test
+    fun dynamicRoutingModes_dualSimAndSip_returnsFourModes() {
+        val env = AvailableCallingEnvironment(
+            simSlots = listOf(
+                SimSlotInfo(0, 1, "SIM 1", "Carrier A", "+15550001"),
+                SimSlotInfo(1, 2, "SIM 2", "Carrier B", "+15550002")
+            ),
+            sipAccounts = listOf(
+                SipAccountModel(
+                    id = 1,
+                    displayName = "Office",
+                    domain = "sip.example.com",
+                    username = "1001",
+                    port = 5061,
+                    transport = SipTransport.TLS
+                )
+            )
+        )
+        val modes = env.availableModes()
+        assertEquals(
+            listOf(
+                OutgoingRoutingMode.SIM_1,
+                OutgoingRoutingMode.SIM_2,
+                OutgoingRoutingMode.SIP,
+                OutgoingRoutingMode.ASK_EVERY_TIME
+            ),
+            modes
+        )
+    }
+
+    @Test
+    fun dynamicRoutingModes_dualSimWithoutSip_returnsThreeModes() {
+        val env = AvailableCallingEnvironment(
+            simSlots = listOf(
+                SimSlotInfo(0, 1, "SIM 1", "Carrier A", ""),
+                SimSlotInfo(1, 2, "SIM 2", "Carrier B", "")
+            ),
+            sipAccounts = emptyList()
+        )
+        assertEquals(
+            listOf(
+                OutgoingRoutingMode.SIM_1,
+                OutgoingRoutingMode.SIM_2,
+                OutgoingRoutingMode.ASK_EVERY_TIME
+            ),
+            env.availableModes()
+        )
+    }
+
+    @Test
+    fun sipMessageCodec_parsesChallengeAndBuildsAuth() {
+        val raw401 = "SIP/2.0 401 Unauthorized\r\n" +
+            "Via: SIP/2.0/UDP 10.0.0.5:5060;branch=z9hG4bK-123\r\n" +
+            "Call-ID: abc@sip.example.com\r\n" +
+            "CSeq: 1 REGISTER\r\n" +
+            "WWW-Authenticate: Digest realm=\"sip.example.com\", nonce=\"xyz987\", qop=\"auth\", algorithm=MD5\r\n" +
+            "Content-Length: 0\r\n\r\n"
+
+        val parsed = SipMessageCodec.parse(raw401)
+        assertNotNull(parsed)
+        assertEquals(401, parsed!!.statusCode)
+
+        val challenge = SipMessageCodec.parseChallenge(parsed)
+        assertNotNull(challenge)
+        assertEquals("sip.example.com", challenge!!.realm)
+
+        val (headerName, headerVal) = SipMessageCodec.buildDigestAuthorizationHeader(
+            challenge = challenge,
+            username = "1001",
+            password = "secret",
+            method = "REGISTER",
+            uri = "sip:sip.example.com"
+        )
+        assertEquals("Authorization", headerName)
+        assertTrue(headerVal.contains("response="))
+        assertTrue(headerVal.contains("username=\"1001\""))
+    }
+
+    @Test
+    fun sdpNegotiation_selectsWidebandG722WhenOffered() {
+        val sdp = SipMessageCodec.buildSdpOffer("192.168.1.50", 40002, preferWideband = true)
+        val parsed = SipMessageCodec.parseSdp(sdp)
+        assertNotNull(parsed)
+        assertEquals("192.168.1.50", parsed!!.remoteIp)
+        assertEquals(40002, parsed.remotePort)
+        assertEquals("G722", parsed.codecName)
+        assertEquals(9, parsed.payloadType)
+    }
+
+    @Test
+    fun g711MuLawRoundTrip_preservesSignalPolarity() {
+        val pcm = shortArrayOf(0, 1000, -1000, 12000, -12000)
+        val encoded = AudioCodecUtils.encodeMuLaw(pcm)
+        val decoded = AudioCodecUtils.decodeMuLaw(encoded)
+        assertEquals(pcm.size, decoded.size)
+        assertTrue(decoded[1] > 0)
+        assertTrue(decoded[2] < 0)
+        assertTrue(decoded[3] > 8000)
+        assertTrue(decoded[4] < -8000)
+    }
+}
