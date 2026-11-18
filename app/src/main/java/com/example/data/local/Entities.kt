@@ -17,7 +17,13 @@ data class SipAccountEntity(
     val isDefault: Boolean,
     val status: String,
     val lastError: String?,
-    val lastRegisteredAtMs: Long?
+    val lastRegisteredAtMs: Long?,
+    val balancePreset: String = "NONE",
+    val balanceCheckUrl: String = "",
+    val showBalanceInKeypad: Boolean = false,
+    val lastBalance: String? = null,
+    val lastBalanceError: String? = null,
+    val lastBalanceUpdatedMs: Long? = null
 )
 
 @Entity(tableName = "call_logs")

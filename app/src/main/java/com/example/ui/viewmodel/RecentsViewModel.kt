@@ -36,14 +36,20 @@ data class CallHistoryDetail(
 
 data class RecentsUiState(
     val filter: RecentsFilter = RecentsFilter.ALL,
+    val searchQuery: String = "",
     val items: List<EnrichedCallLogItem> = emptyList(),
-    val selectedHistory: CallHistoryDetail? = null
+    val matchingContacts: List<ContactItem> = emptyList(),
+    val selectedHistory: CallHistoryDetail? = null,
+    val selectedContact: ContactItem? = null
 )
 
 class RecentsViewModel(private val container: AppContainer) : ViewModel() {
 
     private val _filter = MutableStateFlow(RecentsFilter.ALL)
+    private val _searchQuery = MutableStateFlow("")
     private val _selectedHandle = MutableStateFlow<String?>(null)
+    private val _selectedContact = MutableStateFlow<ContactItem?>(null)
+    private val _allContacts = MutableStateFlow<List<ContactItem>>(emptyList())
     private val _contactsLookup = MutableStateFlow<Map<String, ContactItem>>(emptyMap())
 
     init {
@@ -61,23 +67,25 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
                     if (key.isNotEmpty()) map[key] = contact
                 }
             }
+            _allContacts.value = contacts
             _contactsLookup.value = map
         }
     }
 
     val uiState: StateFlow<RecentsUiState> = combine(
         _filter,
+        _searchQuery,
         container.callLogRepository.recentCallsFlow,
         _selectedHandle,
         _contactsLookup
-    ) { filter, logs, selectedHandle, contactMap ->
-        val filtered = when (filter) {
+    ) { filter, query, logs, selectedHandle, contactMap ->
+        val baseFiltered = when (filter) {
             RecentsFilter.ALL -> logs
             RecentsFilter.MISSED -> logs.filter { it.direction == CallDirection.MISSED }
             RecentsFilter.SIP -> logs.filter { it.sourceType == CallSourceType.SIP }
             RecentsFilter.SIM -> logs.filter { it.sourceType != CallSourceType.SIP }
         }
-        val enriched = filtered.map { log ->
+        val enrichedAll = baseFiltered.map { log ->
             val match = contactMap[normalizeForMatch(log.remoteHandle)]
             EnrichedCallLogItem(
                 log = log,
@@ -85,6 +93,19 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
                 photoUri = match?.photoUri
             )
         }
+
+        val q = query.trim().lowercase()
+        val digitsQuery = q.filter { it.isDigit() }
+        val filteredItems = if (q.isBlank()) {
+            enrichedAll
+        } else {
+            enrichedAll.filter { entry ->
+                entry.displayName.lowercase().contains(q) ||
+                    entry.log.remoteHandle.lowercase().contains(q) ||
+                    (digitsQuery.isNotEmpty() && entry.log.remoteHandle.filter { it.isDigit() }.contains(digitsQuery))
+            }
+        }
+
         val detail = selectedHandle?.let { handle ->
             val targetKey = normalizeForMatch(handle)
             val matching = logs.filter { normalizeForMatch(it.remoteHandle) == targetKey }
@@ -99,11 +120,30 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
                 entries = matching
             )
         }
+
         RecentsUiState(
             filter = filter,
-            items = enriched,
+            searchQuery = query,
+            items = filteredItems,
             selectedHistory = detail
         )
+    }.combine(_allContacts) { state, allContacts ->
+        val q = state.searchQuery.trim().lowercase()
+        val matchingContacts = if (q.isBlank()) {
+            emptyList()
+        } else {
+            val digitsQuery = q.filter { it.isDigit() }
+            allContacts.filter { contact ->
+                contact.displayName.lowercase().contains(q) ||
+                    contact.phoneNumbers.any { phone ->
+                        phone.number.lowercase().contains(q) ||
+                            (digitsQuery.isNotEmpty() && phone.number.filter { it.isDigit() }.contains(digitsQuery))
+                    }
+            }
+        }
+        state.copy(matchingContacts = matchingContacts)
+    }.combine(_selectedContact) { state, selectedContact ->
+        state.copy(selectedContact = selectedContact)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -114,12 +154,24 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
         _filter.value = filter
     }
 
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
     fun openCallHistoryForNumber(remoteHandle: String) {
         _selectedHandle.value = remoteHandle
     }
 
     fun closeCallHistory() {
         _selectedHandle.value = null
+    }
+
+    fun openContactDetail(contact: ContactItem) {
+        _selectedContact.value = contact
+    }
+
+    fun closeContactDetail() {
+        _selectedContact.value = null
     }
 
     fun deleteEntry(id: Long) {

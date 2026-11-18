@@ -46,20 +46,38 @@ class VoipCallForegroundService : Service() {
                 val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Active call"
                 val isRec = intent?.getBooleanExtra(EXTRA_RECORDING, false) ?: false
                 val notification = notifManager.buildOngoingCallNotification(title, subtitle, isRec)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val fgsTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    } else {
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-                    }
-                    startForeground(CallNotificationManager.NOTIF_ID_ONGOING, notification, fgsTypes)
-                } else {
-                    startForeground(CallNotificationManager.NOTIF_ID_ONGOING, notification)
-                }
+                startForegroundSafely(notification, isRec)
             }
         }
         return START_STICKY
+    }
+
+    private fun startForegroundSafely(notification: android.app.Notification, preferMicrophone: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val attempts = buildList {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    add(
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    )
+                    if (preferMicrophone) {
+                        add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                    }
+                    add(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+                } else {
+                    add(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+                }
+            }
+            for (fgsType in attempts) {
+                val ok = runCatching {
+                    startForeground(CallNotificationManager.NOTIF_ID_ONGOING, notification, fgsType)
+                }.isSuccess
+                if (ok) return
+            }
+        }
+        runCatching {
+            startForeground(CallNotificationManager.NOTIF_ID_ONGOING, notification)
+        }
     }
 
     companion object {

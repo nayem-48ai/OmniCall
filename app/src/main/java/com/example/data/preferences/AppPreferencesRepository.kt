@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.RecordingFormat
+import com.example.domain.model.RecordingType
 import com.example.ui.theme.ThemePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -20,6 +21,7 @@ private val Context.appPrefsDataStore: DataStore<Preferences> by preferencesData
 data class AppSettingsState(
     val outgoingRoutingMode: OutgoingRoutingMode = OutgoingRoutingMode.ASK_EVERY_TIME,
     val recordingFormat: RecordingFormat = RecordingFormat.AAC_M4A,
+    val recordingType: RecordingType = RecordingType.INTERNAL_AND_EXTERNAL,
     val preferWidebandCodecs: Boolean = true,
     val enableHardwareAec: Boolean = true,
     val enableHardwareNs: Boolean = true,
@@ -33,6 +35,7 @@ class AppPreferencesRepository(private val context: Context) {
     private object Keys {
         val ROUTING_MODE = stringPreferencesKey("outgoing_routing_mode")
         val RECORDING_FORMAT = stringPreferencesKey("recording_format")
+        val RECORDING_TYPE = stringPreferencesKey("recording_type")
         val WIDEBAND_CODECS = booleanPreferencesKey("prefer_wideband_codecs")
         val HARDWARE_AEC = booleanPreferencesKey("enable_hardware_aec")
         val HARDWARE_NS = booleanPreferencesKey("enable_hardware_ns")
@@ -49,6 +52,9 @@ class AppPreferencesRepository(private val context: Context) {
             recordingFormat = prefs[Keys.RECORDING_FORMAT]?.let {
                 runCatching { RecordingFormat.valueOf(it) }.getOrNull()
             } ?: RecordingFormat.AAC_M4A,
+            recordingType = prefs[Keys.RECORDING_TYPE]?.let {
+                runCatching { RecordingType.valueOf(it) }.getOrNull()
+            } ?: RecordingType.INTERNAL_AND_EXTERNAL,
             preferWidebandCodecs = prefs[Keys.WIDEBAND_CODECS] ?: true,
             enableHardwareAec = prefs[Keys.HARDWARE_AEC] ?: true,
             enableHardwareNs = prefs[Keys.HARDWARE_NS] ?: true,
@@ -66,6 +72,10 @@ class AppPreferencesRepository(private val context: Context) {
 
     suspend fun setRecordingFormat(format: RecordingFormat) {
         context.appPrefsDataStore.edit { it[Keys.RECORDING_FORMAT] = format.name }
+    }
+
+    suspend fun setRecordingType(type: RecordingType) {
+        context.appPrefsDataStore.edit { it[Keys.RECORDING_TYPE] = type.name }
     }
 
     suspend fun setAudioProcessing(

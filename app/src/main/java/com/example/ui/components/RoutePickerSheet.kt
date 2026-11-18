@@ -40,15 +40,26 @@ import com.example.ui.theme.SignalWarning
 fun SipStatusPill(
     status: SipRegistrationStatus?,
     transportLabel: String?,
+    balanceText: String? = null,
+    showBalance: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val (dotColor, text) = when (status) {
-        SipRegistrationStatus.REGISTERED -> SignalConnected to "SIP • ${transportLabel ?: "OK"}"
+    val dotColor = when (status) {
+        SipRegistrationStatus.REGISTERED -> SignalConnected
         SipRegistrationStatus.REGISTERING,
-        SipRegistrationStatus.DISCOVERING -> SignalWarning to "SIP • Connecting"
-        SipRegistrationStatus.ERROR -> MaterialTheme.colorScheme.error to "SIP • Error"
-        SipRegistrationStatus.UNREGISTERED -> MaterialTheme.colorScheme.outline to "SIP • Offline"
-        null -> MaterialTheme.colorScheme.outline to "No SIP"
+        SipRegistrationStatus.DISCOVERING -> SignalWarning
+        SipRegistrationStatus.ERROR -> MaterialTheme.colorScheme.error
+        SipRegistrationStatus.UNREGISTERED -> MaterialTheme.colorScheme.outline
+        null -> MaterialTheme.colorScheme.outline
+    }
+
+    val text = when {
+        status != null && showBalance && !balanceText.isNullOrBlank() -> "SIP • $balanceText"
+        status == SipRegistrationStatus.REGISTERED -> "SIP • ${transportLabel ?: "OK"}"
+        status == SipRegistrationStatus.REGISTERING || status == SipRegistrationStatus.DISCOVERING -> "SIP • Connecting"
+        status == SipRegistrationStatus.ERROR -> "SIP • Error"
+        status == SipRegistrationStatus.UNREGISTERED -> "SIP • Offline"
+        else -> "No SIP"
     }
 
     Surface(
@@ -70,7 +81,9 @@ fun SipStatusPill(
             Text(
                 text = text,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                fontWeight = if (showBalance && !balanceText.isNullOrBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
             )
         }
     }

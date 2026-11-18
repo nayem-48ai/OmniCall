@@ -12,11 +12,14 @@ import com.example.data.repository.SipAccountRepository
 import com.example.data.security.KeystoreCredentialVault
 import com.example.domain.ai.CallEventBus
 import com.example.domain.ai.DefaultCallEventBus
+import com.example.domain.model.SipBalancePreset
 import com.example.sip.DnsSrvResolver
 import com.example.sip.SipAutoConfigEngine
+import com.example.sip.SipBalanceFetcher
 import com.example.sip.SipClientEngine
 import com.example.telecom.ActiveCallCoordinator
 import com.example.telecom.CallNotificationManager
+import com.example.telecom.ProximitySensorWakeLockManager
 import com.example.telecom.SimSubscriptionDetector
 import com.example.telecom.TelecomCallManager
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +45,7 @@ class AppContainer(application: Application) {
     val dnsSrvResolver = DnsSrvResolver(application)
     val sipAutoConfigEngine = SipAutoConfigEngine(dnsSrvResolver)
     val sipClientEngine = SipClientEngine(sipAccountRepository, eventBus)
+    val sipBalanceFetcher = SipBalanceFetcher(sipAccountRepository)
 
     val rtpAudioEngine = RtpAudioEngine(application)
     val dualStreamCallRecorder = DualStreamCallRecorder(
@@ -54,6 +58,7 @@ class AppContainer(application: Application) {
     val simSubscriptionDetector = SimSubscriptionDetector(application)
     val telecomCallManager = TelecomCallManager(application, simSubscriptionDetector)
     val callNotificationManager = CallNotificationManager(application)
+    val proximityWakeLockManager = ProximitySensorWakeLockManager(application)
 
     val activeCallCoordinator = ActiveCallCoordinator(
         context = application,
@@ -66,6 +71,7 @@ class AppContainer(application: Application) {
         callLogRepository = callLogRepository,
         prefsRepository = preferencesRepository,
         notificationManager = callNotificationManager,
+        proximityWakeLockManager = proximityWakeLockManager,
         eventBus = eventBus
     )
 }
@@ -82,11 +88,14 @@ class OmniCallApplication : Application() {
         container.callNotificationManager.ensureChannels()
         container.telecomCallManager.registerSelfManagedSipAccount()
 
-        // Automatically reconnect default enabled SIP account on startup
+        // Automatically reconnect default enabled SIP account and refresh Balance on startup
         appScope.launch {
             val defaultSip = container.sipAccountRepository.getDefaultActiveAccount()
             if (defaultSip != null) {
                 container.sipClientEngine.startAccountRegistration(defaultSip)
+                if (defaultSip.balancePreset != SipBalancePreset.NONE && defaultSip.showBalanceInKeypad) {
+                    container.sipBalanceFetcher.fetchBalance(defaultSip)
+                }
             }
         }
     }

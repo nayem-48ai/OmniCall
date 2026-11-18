@@ -7,8 +7,10 @@ import com.example.data.preferences.AppSettingsState
 import com.example.domain.model.AvailableCallingEnvironment
 import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.RecordingFormat
+import com.example.domain.model.RecordingType
 import com.example.domain.model.SimSlotInfo
 import com.example.domain.model.SipAccountModel
+import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
 import com.example.domain.model.SipTransport
 import com.example.sip.AutoConfigProgress
@@ -48,7 +50,9 @@ data class SipSettingsUiState(
     val settings: AppSettingsState = AppSettingsState(),
     val environment: AvailableCallingEnvironment = AvailableCallingEnvironment(),
     val showAddAccountSheet: Boolean = false,
-    val form: SipFormState = SipFormState()
+    val form: SipFormState = SipFormState(),
+    val managedAccount: SipAccountModel? = null,
+    val isCheckingBalance: Boolean = false
 )
 
 class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
@@ -57,6 +61,8 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     private val _isDefaultDialer = MutableStateFlow(false)
     private val _showSheet = MutableStateFlow(false)
     private val _form = MutableStateFlow(SipFormState())
+    private val _managedAccountId = MutableStateFlow<Long?>(null)
+    private val _isCheckingBalance = MutableStateFlow(false)
 
     private var discoveryJob: Job? = null
 
@@ -93,6 +99,12 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         )
     }.combine(container.recordingRepository.recordingsFlow) { state, recordings ->
         state.copy(recordingsCount = recordings.size)
+    }.combine(_managedAccountId) { state, managedId ->
+        state.copy(
+            managedAccount = managedId?.let { id -> state.accounts.firstOrNull { it.id == id } }
+        )
+    }.combine(_isCheckingBalance) { state, checking ->
+        state.copy(isCheckingBalance = checking)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -284,6 +296,45 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    fun openManageAccount(account: SipAccountModel) {
+        _managedAccountId.value = account.id
+    }
+
+    fun closeManageAccount() {
+        _managedAccountId.value = null
+    }
+
+    fun saveAccountBalanceSettings(
+        accountId: Long,
+        preset: SipBalancePreset,
+        customUrl: String,
+        showInKeypad: Boolean,
+        checkNow: Boolean
+    ) {
+        viewModelScope.launch {
+            container.sipAccountRepository.updateBalanceConfig(
+                accountId = accountId,
+                preset = preset,
+                customUrl = customUrl,
+                showInKeypad = showInKeypad
+            )
+            if (checkNow && preset != SipBalancePreset.NONE) {
+                val updated = container.sipAccountRepository.getById(accountId) ?: return@launch
+                _isCheckingBalance.value = true
+                container.sipBalanceFetcher.fetchBalance(updated)
+                _isCheckingBalance.value = false
+            }
+        }
+    }
+
+    fun checkAccountBalance(account: SipAccountModel) {
+        viewModelScope.launch {
+            _isCheckingBalance.value = true
+            container.sipBalanceFetcher.fetchBalance(account)
+            _isCheckingBalance.value = false
+        }
+    }
+
     fun setOutgoingRoutingMode(mode: OutgoingRoutingMode) {
         viewModelScope.launch {
             container.preferencesRepository.setOutgoingRoutingMode(mode)
@@ -293,6 +344,12 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun setRecordingFormat(format: RecordingFormat) {
         viewModelScope.launch {
             container.preferencesRepository.setRecordingFormat(format)
+        }
+    }
+
+    fun setRecordingType(type: RecordingType) {
+        viewModelScope.launch {
+            container.preferencesRepository.setRecordingType(type)
         }
     }
 

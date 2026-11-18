@@ -116,6 +116,8 @@ fun DialerScreen(
                     SipStatusPill(
                         status = defaultSip?.status,
                         transportLabel = defaultSip?.transport?.label,
+                        balanceText = defaultSip?.lastBalance,
+                        showBalance = defaultSip?.showBalanceInKeypad == true,
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable { onOpenSipSettings() }

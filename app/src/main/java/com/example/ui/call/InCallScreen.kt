@@ -98,6 +98,7 @@ fun InCallScreen(
     onAnswer: () -> Unit,
     onDecline: () -> Unit,
     onEndCall: () -> Unit,
+    isNearEar: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var showDtmfPad by remember { mutableStateOf(false) }
@@ -533,6 +534,27 @@ fun InCallScreen(
                     }
                 }
             }
+        }
+
+        // Software proximity touch guard + black screen overlay backing PROXIMITY_SCREEN_OFF_WAKE_LOCK
+        val proximityGuardActive = isNearEar &&
+            callState.audioRoute == AudioRouteType.EARPIECE &&
+            (callState.lifecycle == CallLifecycleState.DIALING ||
+                callState.lifecycle == CallLifecycleState.RINGING_OUTGOING ||
+                callState.lifecycle == CallLifecycleState.ACTIVE ||
+                callState.lifecycle == CallLifecycleState.ON_HOLD)
+        if (proximityGuardActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .testTag("proximity_screen_off_guard")
+            )
         }
     }
 }

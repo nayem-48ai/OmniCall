@@ -69,6 +69,7 @@ class ActiveCallCoordinator(
     private val callLogRepository: CallLogRepository,
     private val prefsRepository: AppPreferencesRepository,
     private val notificationManager: CallNotificationManager,
+    private val proximityWakeLockManager: ProximitySensorWakeLockManager,
     private val eventBus: CallEventBus
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -76,6 +77,8 @@ class ActiveCallCoordinator(
 
     private val _activeCall = MutableStateFlow(ActiveCallState())
     val activeCall: StateFlow<ActiveCallState> = _activeCall.asStateFlow()
+
+    val isNearEar: StateFlow<Boolean> = proximityWakeLockManager.isNearEar
 
     private val _elapsedSeconds = MutableStateFlow(0)
     val elapsedSeconds: StateFlow<Int> = _elapsedSeconds.asStateFlow()
@@ -95,6 +98,15 @@ class ActiveCallCoordinator(
 
     init {
         observeSipSignaling()
+        observeProximityPolicy()
+    }
+
+    private fun observeProximityPolicy() {
+        scope.launch {
+            _activeCall.collect { state ->
+                proximityWakeLockManager.updateForCallState(state.lifecycle, state.audioRoute)
+            }
+        }
     }
 
     private fun observeSipSignaling() {
@@ -540,14 +552,15 @@ class ActiveCallCoordinator(
                     displayName = current.displayName,
                     sourceType = current.sourceType,
                     sourceLabel = current.routeBadge.ifBlank { current.sourceType.label },
-                    format = prefs.recordingFormat
+                    format = prefs.recordingFormat,
+                    recordingType = prefs.recordingType
                 )
                 if (started) {
                     _activeCall.update {
                         it.copy(
                             isRecording = true,
                             recordingDurationSec = 0,
-                            statusMessage = "Recording locally..."
+                            statusMessage = "Recording (${prefs.recordingType.shortLabel})..."
                         )
                     }
                 } else {
@@ -703,6 +716,7 @@ class ActiveCallCoordinator(
         }
 
         rtpAudioEngine.stopMediaSession()
+        proximityWakeLockManager.release()
         notificationManager.cancelIncomingNotification()
         VoipCallForegroundService.stop(context)
 

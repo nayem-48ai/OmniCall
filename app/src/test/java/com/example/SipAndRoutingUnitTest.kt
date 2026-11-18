@@ -3,9 +3,12 @@ package com.example
 import com.example.audio.AudioCodecUtils
 import com.example.domain.model.AvailableCallingEnvironment
 import com.example.domain.model.OutgoingRoutingMode
+import com.example.domain.model.RecordingType
 import com.example.domain.model.SimSlotInfo
 import com.example.domain.model.SipAccountModel
+import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipTransport
+import com.example.sip.BalanceResponseParser
 import com.example.sip.SipMessageCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -113,5 +116,44 @@ class SipAndRoutingUnitTest {
         assertTrue(decoded[2] < 0)
         assertTrue(decoded[3] > 8000)
         assertTrue(decoded[4] < -8000)
+    }
+
+    @Test
+    fun balanceParser_extractsBalanceFromJsonAndIgnoresCredit() {
+        val json = """{"status":"ok","credit":"500.00","balance":"124.50","currency":"BDT"}"""
+        assertEquals("124.50 BDT", BalanceResponseParser.extractBalance(json))
+    }
+
+    @Test
+    fun balanceParser_extractsBalanceFromHtmlAndIgnoresCredit() {
+        val html = """
+            <html><body>
+              <table>
+                <tr><th>Credit</th><td>999.00 BDT</td></tr>
+                <tr><th>Balance</th><td>42.80 BDT</td></tr>
+              </table>
+            </body></html>
+        """.trimIndent()
+        assertEquals("42.80 BDT", BalanceResponseParser.extractBalance(html))
+    }
+
+    @Test
+    fun balanceParser_extractsSpanIdBalance() {
+        val html = """<div class="card"><span class="credit">100.00</span><span id="user_balance">৳150.25</span></div>"""
+        assertEquals("৳150.25", BalanceResponseParser.extractBalance(html))
+    }
+
+    @Test
+    fun sipBalancePreset_resolvesIccUrlAndRecordingTypesExist() {
+        val acc = SipAccountModel(
+            displayName = "ICC",
+            domain = "icctalk.com",
+            username = "09639170537",
+            port = 5060,
+            transport = SipTransport.UDP,
+            balancePreset = SipBalancePreset.ICC_COMMUNICATION
+        )
+        assertEquals("https://icctalk.com:2020/OTTSSO/login", acc.resolvedBalanceUrl())
+        assertEquals(3, RecordingType.entries.size)
     }
 }

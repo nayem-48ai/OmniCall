@@ -84,6 +84,12 @@ data class AvailableCallingEnvironment(
     }
 }
 
+enum class SipBalancePreset(val label: String, val defaultUrl: String) {
+    NONE("Disabled", ""),
+    ICC_COMMUNICATION("ICC Communication", "https://icctalk.com:2020/OTTSSO/login"),
+    CUSTOM("Custom URL", "")
+}
+
 data class SipAccountModel(
     val id: Long = 0L,
     val displayName: String,
@@ -97,9 +103,21 @@ data class SipAccountModel(
     val isDefault: Boolean = true,
     val status: SipRegistrationStatus = SipRegistrationStatus.UNREGISTERED,
     val lastError: String? = null,
-    val lastRegisteredAtMs: Long? = null
+    val lastRegisteredAtMs: Long? = null,
+    val balancePreset: SipBalancePreset = SipBalancePreset.NONE,
+    val balanceCheckUrl: String = "",
+    val showBalanceInKeypad: Boolean = false,
+    val lastBalance: String? = null,
+    val lastBalanceError: String? = null,
+    val lastBalanceUpdatedMs: Long? = null
 ) {
     val sipUri: String get() = "sip:$username@$domain"
+
+    fun resolvedBalanceUrl(): String = when (balancePreset) {
+        SipBalancePreset.NONE -> ""
+        SipBalancePreset.ICC_COMMUNICATION -> SipBalancePreset.ICC_COMMUNICATION.defaultUrl
+        SipBalancePreset.CUSTOM -> balanceCheckUrl.trim()
+    }
 }
 
 enum class CallDirection {
@@ -124,6 +142,28 @@ enum class AudioRouteType(val label: String) {
 enum class RecordingFormat(val label: String, val extension: String) {
     AAC_M4A("AAC (M4A)", "m4a"),
     WAV("PCM (WAV)", "wav")
+}
+
+enum class RecordingType(
+    val label: String,
+    val shortLabel: String,
+    val description: String
+) {
+    INTERNAL_AND_EXTERNAL(
+        label = "Internal and external Voice",
+        shortLabel = "Both Sides",
+        description = "Records both the other side's conversation and your microphone"
+    ),
+    ONLY_INTERNAL(
+        label = "Only Internal Voice",
+        shortLabel = "Internal Only",
+        description = "Records only the remote party's voice (the other side of the call)"
+    ),
+    ONLY_EXTERNAL(
+        label = "Only External Voice",
+        shortLabel = "External Only",
+        description = "Records only your device microphone voice"
+    )
 }
 
 enum class CallLifecycleState {

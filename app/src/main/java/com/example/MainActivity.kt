@@ -55,6 +55,7 @@ import com.example.ui.contacts.ContactsScreen
 import com.example.ui.dialer.DialerScreen
 import com.example.ui.recents.RecentsScreen
 import com.example.ui.recordings.RecordingsScreen
+import com.example.ui.settings.HiFiAudioSettingsScreen
 import com.example.ui.settings.SipSettingsScreen
 import com.example.ui.theme.OmniCallTheme
 import com.example.ui.viewmodel.ContactsViewModel
@@ -70,6 +71,7 @@ import kotlinx.serialization.Serializable
 @Serializable object ContactsRoute
 @Serializable object SettingsRoute
 @Serializable object RecordingsRoute
+@Serializable object HiFiAudioSettingsRoute
 
 private data class NavItem(
     val route: Any,
@@ -148,6 +150,7 @@ private fun OmniCallRoot(
 
     val activeCall by app.container.activeCallCoordinator.activeCall.collectAsStateWithLifecycle()
     val elapsedSeconds by app.container.activeCallCoordinator.elapsedSeconds.collectAsStateWithLifecycle()
+    val isNearEar by app.container.activeCallCoordinator.isNearEar.collectAsStateWithLifecycle()
 
     val defaultDialerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -219,6 +222,7 @@ private fun OmniCallRoot(
         InCallScreen(
             callState = activeCall,
             elapsedSeconds = elapsedSeconds,
+            isNearEar = isNearEar,
             onToggleMute = coordinator::toggleMute,
             onToggleHold = coordinator::toggleHold,
             onSelectAudioRoute = coordinator::selectAudioRoute,
@@ -234,7 +238,8 @@ private fun OmniCallRoot(
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
-    val isRecordingsScreen = currentDestination?.hasRoute(RecordingsRoute::class) == true
+    val isSettingsSubScreen = currentDestination?.hasRoute(RecordingsRoute::class) == true ||
+        currentDestination?.hasRoute(HiFiAudioSettingsRoute::class) == true
 
     val navigateToTab: (Any) -> Unit = { route ->
         navController.navigate(route) {
@@ -252,7 +257,7 @@ private fun OmniCallRoot(
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
-                if (!useNavRail && !isRecordingsScreen) {
+                if (!useNavRail && !isSettingsSubScreen) {
                     NavigationBar {
                         NAV_ITEMS.forEach { item ->
                             val selected = currentDestination?.hasRoute(item.route::class) == true
@@ -278,7 +283,7 @@ private fun OmniCallRoot(
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                if (useNavRail && !isRecordingsScreen) {
+                if (useNavRail && !isSettingsSubScreen) {
                     NavigationRail {
                         NAV_ITEMS.forEach { item ->
                             val selected = currentDestination?.hasRoute(item.route::class) == true
@@ -314,9 +319,12 @@ private fun OmniCallRoot(
                     composable<RecentsRoute> {
                         RecentsScreen(
                             uiState = recentsState,
+                            onSearchChange = recentsViewModel::setSearchQuery,
                             onSelectFilter = recentsViewModel::setFilter,
                             onOpenCallHistory = recentsViewModel::openCallHistoryForNumber,
                             onCloseCallHistory = recentsViewModel::closeCallHistory,
+                            onSelectContact = recentsViewModel::openContactDetail,
+                            onCloseContactDetail = recentsViewModel::closeContactDetail,
                             onCallBack = { number ->
                                 dialerViewModel.initiateCall(number)
                             },
@@ -363,6 +371,9 @@ private fun OmniCallRoot(
                             },
                             onOpenRecordings = {
                                 navController.navigate(RecordingsRoute)
+                            },
+                            onOpenHiFiAudioSettings = {
+                                navController.navigate(HiFiAudioSettingsRoute)
                             }
                         )
                     }
@@ -370,6 +381,13 @@ private fun OmniCallRoot(
                         RecordingsScreen(
                             uiState = recordingsState,
                             viewModel = recordingsViewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable<HiFiAudioSettingsRoute> {
+                        HiFiAudioSettingsScreen(
+                            uiState = settingsState,
+                            viewModel = settingsViewModel,
                             onBack = { navController.popBackStack() }
                         )
                     }

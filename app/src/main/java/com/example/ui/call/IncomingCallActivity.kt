@@ -28,6 +28,7 @@ class IncomingCallActivity : ComponentActivity() {
                 .collectAsStateWithLifecycle(initialValue = com.example.data.preferences.AppSettingsState())
             val callState by coordinator.activeCall.collectAsStateWithLifecycle()
             val elapsed by coordinator.elapsedSeconds.collectAsStateWithLifecycle()
+            val isNearEar by coordinator.isNearEar.collectAsStateWithLifecycle()
 
             LaunchedEffect(callState.lifecycle) {
                 if (callState.lifecycle == CallLifecycleState.IDLE ||
@@ -44,6 +45,7 @@ class IncomingCallActivity : ComponentActivity() {
                 InCallScreen(
                     callState = callState,
                     elapsedSeconds = elapsed,
+                    isNearEar = isNearEar,
                     onToggleMute = coordinator::toggleMute,
                     onToggleHold = coordinator::toggleHold,
                     onSelectAudioRoute = coordinator::selectAudioRoute,

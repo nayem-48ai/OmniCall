@@ -19,11 +19,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SimCard
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WifiCalling3
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
@@ -61,8 +64,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.OutgoingRoutingMode
-import com.example.domain.model.RecordingFormat
 import com.example.domain.model.SipAccountModel
+import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
 import com.example.ui.theme.SignalConnected
 import com.example.ui.theme.SignalWarning
@@ -78,6 +81,7 @@ fun SipSettingsScreen(
     onRequestDefaultDialer: () -> Unit,
     onRequestPermissions: () -> Unit,
     onOpenRecordings: () -> Unit,
+    onOpenHiFiAudioSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val env = uiState.environment
@@ -143,6 +147,50 @@ fun SipSettingsScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                             contentDescription = "Open Call Recordings"
+                        )
+                    }
+                }
+            }
+
+            // Hi-Fi Audio & Recording Tab Entry Card
+            item {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable(onClick = onOpenHiFiAudioSettings)
+                        .testTag("settings_open_hifi_audio_card")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.HighQuality,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Hi-Fi Audio & Recording",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "${uiState.settings.recordingType.label} • ${uiState.settings.recordingFormat.label}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = "Open Hi-Fi Audio & Recording"
                         )
                     }
                 }
@@ -333,6 +381,7 @@ fun SipSettingsScreen(
                             uiState.accounts.forEach { acc ->
                                 SipAccountRow(
                                     account = acc,
+                                    onManageAccount = { viewModel.openManageAccount(acc) },
                                     onReRegister = { viewModel.reRegisterAccount(acc) },
                                     onSetDefault = { viewModel.setDefaultSipAccount(acc.id) },
                                     onToggleEnabled = { viewModel.toggleAccountEnabled(acc, it) },
@@ -344,60 +393,7 @@ fun SipSettingsScreen(
                 }
             }
 
-            // 4. Hi-Fi Audio DSP & Local Call Recording Format
-            item {
-                SettingsSectionCard(title = "Hi-Fi Audio & Recording") {
-                    AudioToggleRow(
-                        label = "Wideband Codecs (G.722 / HD)",
-                        description = "Prioritize 16 kHz wideband SDP negotiation",
-                        checked = uiState.settings.preferWidebandCodecs,
-                        onCheckedChange = { viewModel.setAudioProcessing(wideband = it) },
-                        testTag = "toggle_wideband_codecs"
-                    )
-                    AudioToggleRow(
-                        label = "Hardware Echo Cancellation (AEC)",
-                        description = "AcousticEchoCanceler on VOICE_COMMUNICATION",
-                        checked = uiState.settings.enableHardwareAec,
-                        onCheckedChange = { viewModel.setAudioProcessing(aec = it) },
-                        testTag = "toggle_hardware_aec"
-                    )
-                    AudioToggleRow(
-                        label = "Hardware Noise Suppression (NS)",
-                        description = "Suppresses ambient background noise on uplink",
-                        checked = uiState.settings.enableHardwareNs,
-                        onCheckedChange = { viewModel.setAudioProcessing(ns = it) },
-                        testTag = "toggle_hardware_ns"
-                    )
-                    AudioToggleRow(
-                        label = "Automatic Gain Control (AGC)",
-                        description = "Normalizes microphone voice loudness",
-                        checked = uiState.settings.enableHardwareAgc,
-                        onCheckedChange = { viewModel.setAudioProcessing(agc = it) },
-                        testTag = "toggle_hardware_agc"
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Manual Call Recording Format",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(top = 6.dp)
-                    ) {
-                        RecordingFormat.entries.forEach { fmt ->
-                            FilterChip(
-                                selected = uiState.settings.recordingFormat == fmt,
-                                onClick = { viewModel.setRecordingFormat(fmt) },
-                                label = { Text(fmt.label) },
-                                modifier = Modifier.testTag("recording_format_${fmt.name.lowercase()}")
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 5. Theme & Appearance
+            // 4. Theme & Appearance
             item {
                 SettingsSectionCard(title = "Appearance") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -430,6 +426,30 @@ fun SipSettingsScreen(
             onStartAutoConfig = viewModel::runSmartAutoConfigureAndSave,
             onSaveOffline = viewModel::saveOfflineWithDefaults,
             onDismiss = viewModel::closeAccountSheet
+        )
+    }
+
+    uiState.managedAccount?.let { managed ->
+        SipAccountManageSheet(
+            account = managed,
+            isCheckingBalance = uiState.isCheckingBalance,
+            onSaveBalanceSettings = { preset, url, showInKeypad, checkNow ->
+                viewModel.saveAccountBalanceSettings(
+                    accountId = managed.id,
+                    preset = preset,
+                    customUrl = url,
+                    showInKeypad = showInKeypad,
+                    checkNow = checkNow
+                )
+            },
+            onCheckBalanceNow = { viewModel.checkAccountBalance(managed) },
+            onReRegister = { viewModel.reRegisterAccount(managed) },
+            onSetDefault = { viewModel.setDefaultSipAccount(managed.id) },
+            onDelete = {
+                viewModel.closeManageAccount()
+                viewModel.deleteAccount(managed.id)
+            },
+            onDismiss = viewModel::closeManageAccount
         )
     }
 }
@@ -468,6 +488,7 @@ private fun SettingsSectionCard(
 @Composable
 private fun SipAccountRow(
     account: SipAccountModel,
+    onManageAccount: () -> Unit,
     onReRegister: () -> Unit,
     onSetDefault: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
@@ -486,6 +507,8 @@ private fun SipAccountRow(
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onManageAccount)
             .testTag("sip_account_card_${account.id}")
     ) {
         Column(
@@ -551,6 +574,21 @@ private fun SipAccountRow(
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
+                    if (!account.lastBalance.isNullOrBlank()) {
+                        Text(
+                            text = "Balance: ${account.lastBalance}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SignalConnected,
+                            maxLines = 1
+                        )
+                    } else {
+                        Text(
+                            text = "Tap to manage & check balance",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Switch(
@@ -621,6 +659,228 @@ private fun SipAccountRow(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SipAccountManageSheet(
+    account: SipAccountModel,
+    isCheckingBalance: Boolean,
+    onSaveBalanceSettings: (SipBalancePreset, String, Boolean, Boolean) -> Unit,
+    onCheckBalanceNow: () -> Unit,
+    onReRegister: () -> Unit,
+    onSetDefault: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedPreset by remember(account.id, account.balancePreset) {
+        mutableStateOf(account.balancePreset)
+    }
+    var customUrl by remember(account.id, account.balanceCheckUrl) {
+        mutableStateOf(account.balanceCheckUrl)
+    }
+    var showInKeypad by remember(account.id, account.showBalanceInKeypad) {
+        mutableStateOf(account.showBalanceInKeypad)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Rounded.AccountBalanceWallet,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = account.displayName,
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        text = "${account.sipUri} • ${account.transport.label}:${account.port}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Live Balance Card
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Account Balance",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = account.lastBalance ?: "Not checked yet",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (!account.lastBalance.isNullOrBlank()) {
+                                SignalConnected
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                        account.lastBalanceError?.let { err ->
+                            Text(
+                                text = err,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            if (selectedPreset != account.balancePreset ||
+                                customUrl != account.balanceCheckUrl ||
+                                showInKeypad != account.showBalanceInKeypad
+                            ) {
+                                onSaveBalanceSettings(selectedPreset, customUrl, showInKeypad, true)
+                            } else {
+                                onCheckBalanceNow()
+                            }
+                        },
+                        enabled = !isCheckingBalance && selectedPreset != SipBalancePreset.NONE,
+                        modifier = Modifier.testTag("sip_check_balance_button")
+                    ) {
+                        if (isCheckingBalance) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Checking...")
+                        } else {
+                            Text("Check Balance")
+                        }
+                    }
+                }
+            }
+
+            Text(
+                text = "Balance Check Provider",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            SipBalancePreset.entries.forEach { preset ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { selectedPreset = preset }
+                        .padding(vertical = 4.dp)
+                        .testTag("balance_preset_${preset.name.lowercase()}"),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = selectedPreset == preset,
+                        onClick = { selectedPreset = preset }
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text(
+                            text = preset.label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (preset == SipBalancePreset.ICC_COMMUNICATION) {
+                            Text(
+                                text = "Uses saved SIP username & password with ICC OTTSSO",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (selectedPreset == SipBalancePreset.CUSTOM) {
+                OutlinedTextField(
+                    value = customUrl,
+                    onValueChange = { customUrl = it },
+                    label = { Text("Balance Check URL") },
+                    placeholder = { Text("https://provider.example.com/api/balance") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("sip_balance_custom_url_input")
+                )
+            }
+
+            if (selectedPreset != SipBalancePreset.NONE) {
+                AudioToggleRow(
+                    label = "Show in Keypad",
+                    description = "Shows SIP • <Balance> in the Keypad top status pill",
+                    checked = showInKeypad,
+                    onCheckedChange = { showInKeypad = it },
+                    testTag = "toggle_show_balance_in_keypad"
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (!account.isDefault) {
+                    OutlinedButton(
+                        onClick = onSetDefault,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Set Default")
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onReRegister,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Re-register")
+                    }
+                }
+                Button(
+                    onClick = {
+                        onSaveBalanceSettings(selectedPreset, customUrl, showInKeypad, false)
+                        onDismiss()
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("sip_save_balance_settings_button")
+                ) {
+                    Text("Save")
+                }
+            }
+
+            androidx.compose.material3.TextButton(
+                onClick = onDelete,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("Delete Account", color = MaterialTheme.colorScheme.error)
             }
         }
     }

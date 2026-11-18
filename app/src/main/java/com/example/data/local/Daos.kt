@@ -30,6 +30,12 @@ interface SipAccountDao {
     @Query("UPDATE sip_accounts SET status = :status, lastError = :lastError, lastRegisteredAtMs = :registeredAtMs WHERE id = :id")
     suspend fun updateRegistrationStatus(id: Long, status: String, lastError: String?, registeredAtMs: Long?)
 
+    @Query("UPDATE sip_accounts SET balancePreset = :preset, balanceCheckUrl = :url, showBalanceInKeypad = :showInKeypad WHERE id = :id")
+    suspend fun updateBalanceConfig(id: Long, preset: String, url: String, showInKeypad: Boolean)
+
+    @Query("UPDATE sip_accounts SET lastBalance = :balance, lastBalanceError = :error, lastBalanceUpdatedMs = :updatedMs WHERE id = :id")
+    suspend fun updateBalanceResult(id: Long, balance: String?, error: String?, updatedMs: Long?)
+
     @Query("DELETE FROM sip_accounts WHERE id = :id")
     suspend fun deleteById(id: Long)
 }

@@ -11,6 +11,7 @@ import com.example.domain.model.CallDirection
 import com.example.domain.model.CallSourceType
 import com.example.domain.model.RecordingFormat
 import com.example.domain.model.SipAccountModel
+import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
 import com.example.domain.model.SipTransport
 import kotlinx.coroutines.flow.Flow
@@ -53,6 +54,8 @@ class SipAccountRepository(
 
     suspend fun getAllAccounts(): List<SipAccountModel> = dao.getAll().map { it.toDomain() }
 
+    suspend fun getById(accountId: Long): SipAccountModel? = dao.getById(accountId)?.toDomain()
+
     suspend fun getDefaultActiveAccount(): SipAccountModel? {
         val all = getAllAccounts()
         return all.firstOrNull { it.isEnabled && it.isDefault }
@@ -60,10 +63,22 @@ class SipAccountRepository(
     }
 
     suspend fun saveAccountWithPassword(account: SipAccountModel, password: String): Long {
-        val entity = account.toEntity()
+        val existing = if (account.id > 0L) dao.getById(account.id) else null
+        val merged = if (existing != null) {
+            account.copy(
+                balancePreset = runCatching { SipBalancePreset.valueOf(existing.balancePreset) }.getOrDefault(account.balancePreset),
+                balanceCheckUrl = existing.balanceCheckUrl.ifBlank { account.balanceCheckUrl },
+                showBalanceInKeypad = existing.showBalanceInKeypad || account.showBalanceInKeypad,
+                lastBalance = existing.lastBalance ?: account.lastBalance,
+                lastBalanceError = existing.lastBalanceError,
+                lastBalanceUpdatedMs = existing.lastBalanceUpdatedMs ?: account.lastBalanceUpdatedMs
+            )
+        } else account
+
+        val entity = merged.toEntity()
         val id = dao.insert(entity)
-        val savedId = if (account.id > 0L) account.id else id
-        if (account.isDefault) {
+        val savedId = if (merged.id > 0L) merged.id else id
+        if (merged.isDefault) {
             dao.setDefaultAccount(savedId)
         }
         vault.saveSipPassword(savedId, password)
@@ -87,6 +102,24 @@ class SipAccountRepository(
         dao.updateRegistrationStatus(accountId, status.name, error, registeredAt)
     }
 
+    suspend fun updateBalanceConfig(
+        accountId: Long,
+        preset: SipBalancePreset,
+        customUrl: String,
+        showInKeypad: Boolean
+    ) {
+        dao.updateBalanceConfig(accountId, preset.name, customUrl.trim(), showInKeypad)
+    }
+
+    suspend fun updateBalanceResult(
+        accountId: Long,
+        balance: String?,
+        error: String?,
+        updatedMs: Long?
+    ) {
+        dao.updateBalanceResult(accountId, balance, error, updatedMs)
+    }
+
     suspend fun deleteAccount(accountId: Long) {
         dao.deleteById(accountId)
         vault.deleteSipPassword(accountId)
@@ -105,7 +138,13 @@ class SipAccountRepository(
         isDefault = isDefault,
         status = runCatching { SipRegistrationStatus.valueOf(status) }.getOrDefault(SipRegistrationStatus.UNREGISTERED),
         lastError = lastError,
-        lastRegisteredAtMs = lastRegisteredAtMs
+        lastRegisteredAtMs = lastRegisteredAtMs,
+        balancePreset = runCatching { SipBalancePreset.valueOf(balancePreset) }.getOrDefault(SipBalancePreset.NONE),
+        balanceCheckUrl = balanceCheckUrl,
+        showBalanceInKeypad = showBalanceInKeypad,
+        lastBalance = lastBalance,
+        lastBalanceError = lastBalanceError,
+        lastBalanceUpdatedMs = lastBalanceUpdatedMs
     )
 
     private fun SipAccountModel.toEntity() = SipAccountEntity(
@@ -121,7 +160,13 @@ class SipAccountRepository(
         isDefault = isDefault,
         status = status.name,
         lastError = lastError,
-        lastRegisteredAtMs = lastRegisteredAtMs
+        lastRegisteredAtMs = lastRegisteredAtMs,
+        balancePreset = balancePreset.name,
+        balanceCheckUrl = balanceCheckUrl,
+        showBalanceInKeypad = showBalanceInKeypad,
+        lastBalance = lastBalance,
+        lastBalanceError = lastBalanceError,
+        lastBalanceUpdatedMs = lastBalanceUpdatedMs
     )
 }
 
