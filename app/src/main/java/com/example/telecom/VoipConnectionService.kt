@@ -97,13 +97,24 @@ class VoipConnectionService : ConnectionService() {
 
         @Suppress("DEPRECATION")
         override fun onCallAudioStateChanged(state: CallAudioState?) {
-            val route = when (state?.route) {
+            if (state == null) return
+            val route = when (state.route) {
                 CallAudioState.ROUTE_SPEAKER -> AudioRouteType.SPEAKER
                 CallAudioState.ROUTE_BLUETOOTH -> AudioRouteType.BLUETOOTH
                 CallAudioState.ROUTE_WIRED_HEADSET -> AudioRouteType.WIRED_HEADSET
                 else -> AudioRouteType.EARPIECE
             }
-            coordinator()?.onSystemAudioRouteChanged(route)
+            val supported = buildList {
+                add(AudioRouteType.EARPIECE)
+                add(AudioRouteType.SPEAKER)
+                if ((state.supportedRouteMask and CallAudioState.ROUTE_BLUETOOTH) != 0) {
+                    add(AudioRouteType.BLUETOOTH)
+                }
+                if ((state.supportedRouteMask and CallAudioState.ROUTE_WIRED_HEADSET) != 0) {
+                    add(AudioRouteType.WIRED_HEADSET)
+                }
+            }
+            coordinator()?.onSystemAudioRouteChanged(route, supported)
         }
 
         private fun coordinator(): ActiveCallCoordinator? {

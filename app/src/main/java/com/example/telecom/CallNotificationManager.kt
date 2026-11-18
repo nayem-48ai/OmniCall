@@ -12,6 +12,7 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
@@ -20,7 +21,7 @@ import com.example.ui.call.IncomingCallActivity
 class CallNotificationManager(private val context: Context) {
 
     companion object {
-        const val CHANNEL_INCOMING = "omnicall_incoming_calls"
+        const val CHANNEL_INCOMING = "omnicall_incoming_calls_v2"
         const val CHANNEL_ONGOING = "omnicall_ongoing_calls"
         const val NOTIF_ID_INCOMING = 4101
         const val NOTIF_ID_ONGOING = 4102
@@ -50,6 +51,7 @@ class CallNotificationManager(private val context: Context) {
                         .build()
                 )
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0L, 800L, 600L, 800L)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
@@ -77,7 +79,10 @@ class CallNotificationManager(private val context: Context) {
         ensureChannels()
 
         val fullScreenIntent = Intent(context, IncomingCallActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_NO_USER_ACTION
         }
         val fullScreenPi = PendingIntent.getActivity(
             context,
@@ -100,19 +105,28 @@ class CallNotificationManager(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val displayTitle = callerName.ifBlank { callerHandle.ifBlank { "Incoming Call" } }
+        val callerPerson = Person.Builder()
+            .setName(displayTitle)
+            .setImportant(true)
+            .build()
+
         val notification = NotificationCompat.Builder(context, CHANNEL_INCOMING)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
-            .setContentTitle(callerName.ifBlank { callerHandle })
-            .setContentText("Incoming $lineBadge call • $callerHandle")
+            .setContentTitle(displayTitle)
+            .setContentText("Incoming $lineBadge • $callerHandle")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(fullScreenPi)
             .setFullScreenIntent(fullScreenPi, true)
-            .addAction(android.R.drawable.ic_menu_call, context.getString(R.string.incoming_answer), answerPi)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, context.getString(R.string.incoming_decline), declinePi)
+            .setStyle(NotificationCompat.CallStyle.forIncomingCall(callerPerson, declinePi, answerPi))
             .build()
+            .apply {
+                flags = flags or Notification.FLAG_INSISTENT
+            }
 
         notificationManager.notify(NOTIF_ID_INCOMING, notification)
     }

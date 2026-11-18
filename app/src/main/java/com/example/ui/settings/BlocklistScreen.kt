@@ -298,20 +298,32 @@ fun BlocklistScreen(
                                 state = dismissState,
                                 enableDismissFromStartToEnd = false,
                                 enableDismissFromEndToStart = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(18.dp)),
                                 backgroundContent = {
+                                    val isSwipingLeft =
+                                        dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart
                                     Box(
                                         modifier = Modifier
                                             .fillMaxSize()
-                                            .clip(RoundedCornerShape(18.dp))
-                                            .background(MaterialTheme.colorScheme.errorContainer)
+                                            .background(
+                                                if (isSwipingLeft) {
+                                                    MaterialTheme.colorScheme.errorContainer
+                                                } else {
+                                                    androidx.compose.ui.graphics.Color.Transparent
+                                                }
+                                            )
                                             .padding(horizontal = 20.dp),
                                         contentAlignment = Alignment.CenterEnd
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.DeleteOutline,
-                                            contentDescription = "Swipe to unblock",
-                                            tint = MaterialTheme.colorScheme.onErrorContainer
-                                        )
+                                        if (isSwipingLeft) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.DeleteOutline,
+                                                contentDescription = "Swipe to unblock",
+                                                tint = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                        }
                                     }
                                 }
                             ) {
@@ -389,9 +401,9 @@ private fun BlockedNumberRow(
     onUnblockClick: () -> Unit
 ) {
     val containerColor = if (isSelected) {
-        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+        MaterialTheme.colorScheme.primaryContainer
     } else {
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+        MaterialTheme.colorScheme.surfaceContainerHigh
     }
 
     Surface(

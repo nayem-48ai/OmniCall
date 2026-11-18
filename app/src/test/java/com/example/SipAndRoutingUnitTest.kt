@@ -171,4 +171,43 @@ class SipAndRoutingUnitTest {
             BlocklistRepository.normalizeKey("sip:1002@sip.example.com")
         )
     }
+
+    @Test
+    fun sipRegister_usesMappedPublicContactForIncomingInvites() {
+        val req = SipMessageCodec.buildRegisterRequest(
+            domain = "icctalk.com",
+            username = "09639170537",
+            localIp = "192.168.1.25",
+            localPort = 45120,
+            transport = SipTransport.UDP,
+            callId = "reg-1@icctalk.com",
+            cseq = 2,
+            fromTag = "ftag1",
+            branch = "z9hG4bK-reg",
+            expiresSec = 120,
+            contactIp = "103.45.67.89",
+            contactPort = 61234
+        )
+        assertTrue(req.contains("Via: SIP/2.0/UDP 192.168.1.25:45120;rport;branch=z9hG4bK-reg"))
+        assertTrue(req.contains("Contact: <sip:09639170537@103.45.67.89:61234;transport=udp>"))
+        assertTrue(req.contains("Expires: 120"))
+    }
+
+    @Test
+    fun sipMessageCodec_parsesCompactHeadersOnIncomingInvite() {
+        val rawInvite = "INVITE sip:09639170537@103.45.67.89:61234 SIP/2.0\r\n" +
+            "v: SIP/2.0/UDP 203.0.113.10:5060;branch=z9hG4bK-in1\r\n" +
+            "f: \"Caller\" <sip:01712345678@icctalk.com>;tag=rem1\r\n" +
+            "t: <sip:09639170537@icctalk.com>\r\n" +
+            "i: call-in-99@icctalk.com\r\n" +
+            "CSeq: 1 INVITE\r\n" +
+            "l: 0\r\n\r\n"
+
+        val parsed = SipMessageCodec.parse(rawInvite)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.isRequest)
+        assertEquals("INVITE", parsed.method)
+        assertEquals("call-in-99@icctalk.com", parsed.firstHeader("Call-ID"))
+        assertTrue(parsed.firstHeader("From").orEmpty().contains("01712345678@icctalk.com"))
+    }
 }

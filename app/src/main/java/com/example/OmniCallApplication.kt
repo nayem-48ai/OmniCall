@@ -46,7 +46,7 @@ class AppContainer(application: Application) {
 
     val dnsSrvResolver = DnsSrvResolver(application)
     val sipAutoConfigEngine = SipAutoConfigEngine(dnsSrvResolver)
-    val sipClientEngine = SipClientEngine(sipAccountRepository, eventBus)
+    val sipClientEngine = SipClientEngine(application, sipAccountRepository, eventBus)
     val sipBalanceFetcher = SipBalanceFetcher(sipAccountRepository)
 
     val rtpAudioEngine = RtpAudioEngine(application)

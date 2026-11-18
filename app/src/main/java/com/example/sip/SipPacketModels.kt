@@ -62,13 +62,15 @@ object SipMessageCodec {
         cseq: Int,
         fromTag: String,
         branch: String,
-        expiresSec: Int = 300,
-        authHeader: Pair<String, String>? = null
+        expiresSec: Int = 120,
+        authHeader: Pair<String, String>? = null,
+        contactIp: String = localIp,
+        contactPort: Int = localPort
     ): String {
         val transportUpper = transport.label
         val requestUri = "sip:$domain"
         val aor = "<sip:$username@$domain>"
-        val contact = "<sip:$username@$localIp:$localPort;transport=${transportUpper.lowercase()}>"
+        val contact = "<sip:$username@$contactIp:$contactPort;transport=${transportUpper.lowercase()}>"
 
         return buildString {
             append("REGISTER $requestUri SIP/2.0$CRLF")

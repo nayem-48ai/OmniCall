@@ -1,6 +1,8 @@
 package com.example.ui.call
 
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,12 +15,17 @@ import com.example.ui.theme.OmniCallTheme
 
 /**
  * Full-screen incoming/active call Activity triggered by [android.app.Notification.Builder.setFullScreenIntent]
- * when the device is locked or screen is off.
+ * or direct [android.telecom.InCallService] launch when a call arrives.
  */
 class IncomingCallActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
         val app = application as OmniCallApplication
         val coordinator = app.container.activeCallCoordinator

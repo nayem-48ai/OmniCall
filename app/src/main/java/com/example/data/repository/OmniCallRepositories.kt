@@ -272,8 +272,17 @@ class BlocklistRepository(
     private val context: Context,
     private val dao: BlocklistDao
 ) {
+    @Volatile
+    private var cachedKeys: Set<String> = emptySet()
+
     val blockedFlow: Flow<List<BlockedNumberItem>> = dao.observeAll().map { list ->
+        cachedKeys = list.map { it.normalizedKey }.toSet()
         list.map { it.toDomain() }
+    }
+
+    fun isBlockedFast(handle: String): Boolean {
+        val key = normalizeKey(handle)
+        return key.isNotEmpty() && key in cachedKeys
     }
 
     suspend fun getAllBlocked(): List<BlockedNumberItem> = dao.getAll().map { it.toDomain() }
@@ -281,7 +290,9 @@ class BlocklistRepository(
     suspend fun isBlocked(handle: String): Boolean {
         val key = normalizeKey(handle)
         if (key.isEmpty()) return false
-        val localHit = dao.getAll().any { it.normalizedKey == key }
+        val all = dao.getAll()
+        cachedKeys = all.map { it.normalizedKey }.toSet()
+        val localHit = all.any { it.normalizedKey == key }
         if (localHit) return true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             val sysHit = runCatching {

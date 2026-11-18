@@ -1,5 +1,6 @@
 package com.example.ui.call
 
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -61,12 +62,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.domain.model.ActiveCallState
 import com.example.domain.model.AudioRouteType
 import com.example.domain.model.CallLifecycleState
@@ -113,19 +116,48 @@ fun InCallScreen(
         label = "pulse_alpha"
     )
 
+    val hasPhoto = !callState.remotePhotoUri.isNullOrBlank()
+    val parsedBackdropUri = remember(callState.remotePhotoUri) {
+        callState.remotePhotoUri?.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(listOf(InCallGradientTop, InCallGradientBottom))
-            )
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 24.dp, vertical = 14.dp),
+            ),
         contentAlignment = Alignment.Center
     ) {
+        if (parsedBackdropUri != null) {
+            AsyncImage(
+                model = parsedBackdropUri,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(0.32f)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                InCallGradientTop.copy(alpha = 0.56f),
+                                Color.Black.copy(alpha = 0.52f),
+                                InCallGradientBottom.copy(alpha = 0.94f)
+                            )
+                        )
+                    )
+            )
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 24.dp, vertical = 14.dp)
                 .widthIn(max = 520.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
@@ -189,29 +221,45 @@ fun InCallScreen(
 
             // Caller Info (compact when Google Phone / Zoiper style DTMF pad is open)
             if (showDtmfPad) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        text = callState.displayName.ifBlank { callState.remoteHandle },
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = when (callState.lifecycle) {
-                            CallLifecycleState.DIALING -> "Dialing..."
-                            CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
-                            CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
-                            CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
-                            else -> ""
-                        },
-                        style = MonoTelemetryStyle,
-                        color = SignalConnected,
-                        modifier = Modifier.testTag("in_call_timer_text")
-                    )
+                    if (hasPhoto) {
+                        ContactAvatar(
+                            displayName = callState.displayName.ifBlank { callState.remoteHandle },
+                            photoUri = callState.remotePhotoUri,
+                            size = 44.dp,
+                            fontSize = 16.sp,
+                            containerColor = Color.White.copy(alpha = 0.14f),
+                            contentColor = Color.White,
+                            borderColor = Color.White.copy(alpha = 0.35f)
+                        )
+                    }
+                    Column(
+                        horizontalAlignment = if (hasPhoto) Alignment.Start else Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = callState.displayName.ifBlank { callState.remoteHandle },
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = when (callState.lifecycle) {
+                                CallLifecycleState.DIALING -> "Dialing..."
+                                CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
+                                CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
+                                CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
+                                else -> ""
+                            },
+                            style = MonoTelemetryStyle,
+                            color = SignalConnected,
+                            modifier = Modifier.testTag("in_call_timer_text")
+                        )
+                    }
                 }
             } else {
                 Column(
@@ -221,11 +269,11 @@ fun InCallScreen(
                     ContactAvatar(
                         displayName = callState.displayName.ifBlank { callState.remoteHandle },
                         photoUri = callState.remotePhotoUri,
-                        size = 96.dp,
-                        fontSize = 32.sp,
+                        size = if (hasPhoto) 136.dp else 104.dp,
+                        fontSize = if (hasPhoto) 40.sp else 34.sp,
                         containerColor = Color.White.copy(alpha = 0.14f),
                         contentColor = Color.White,
-                        borderColor = Color.White.copy(alpha = 0.28f)
+                        borderColor = if (hasPhoto) Color.White.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.28f)
                     )
 
                     Text(
@@ -455,31 +503,49 @@ fun InCallScreen(
                                 onClick = { showDtmfPad = true },
                                 testTag = "in_call_keypad_button"
                             )
-                            Box {
+                            val hasMultipleOutputs = callState.availableAudioRoutes.size > 2
+                            if (!hasMultipleOutputs) {
                                 CallControlTile(
-                                    icon = when (callState.audioRoute) {
-                                        AudioRouteType.SPEAKER -> Icons.Rounded.VolumeUp
-                                        AudioRouteType.BLUETOOTH -> Icons.Rounded.BluetoothAudio
-                                        AudioRouteType.WIRED_HEADSET -> Icons.Rounded.Headset
-                                        AudioRouteType.EARPIECE -> Icons.Rounded.PhoneInTalk
+                                    icon = Icons.Rounded.VolumeUp,
+                                    label = "Speaker",
+                                    active = callState.audioRoute == AudioRouteType.SPEAKER,
+                                    onClick = {
+                                        val nextRoute = if (callState.audioRoute == AudioRouteType.SPEAKER) {
+                                            AudioRouteType.EARPIECE
+                                        } else {
+                                            AudioRouteType.SPEAKER
+                                        }
+                                        onSelectAudioRoute(nextRoute)
                                     },
-                                    label = callState.audioRoute.label,
-                                    active = callState.audioRoute != AudioRouteType.EARPIECE,
-                                    onClick = { showAudioMenu = true },
                                     testTag = "in_call_audio_route_button"
                                 )
-                                DropdownMenu(
-                                    expanded = showAudioMenu,
-                                    onDismissRequest = { showAudioMenu = false }
-                                ) {
-                                    callState.availableAudioRoutes.forEach { route ->
-                                        DropdownMenuItem(
-                                            text = { Text(route.label) },
-                                            onClick = {
-                                                onSelectAudioRoute(route)
-                                                showAudioMenu = false
-                                            }
-                                        )
+                            } else {
+                                Box {
+                                    CallControlTile(
+                                        icon = when (callState.audioRoute) {
+                                            AudioRouteType.SPEAKER -> Icons.Rounded.VolumeUp
+                                            AudioRouteType.BLUETOOTH -> Icons.Rounded.BluetoothAudio
+                                            AudioRouteType.WIRED_HEADSET -> Icons.Rounded.Headset
+                                            AudioRouteType.EARPIECE -> Icons.Rounded.PhoneInTalk
+                                        },
+                                        label = callState.audioRoute.label,
+                                        active = callState.audioRoute != AudioRouteType.EARPIECE,
+                                        onClick = { showAudioMenu = true },
+                                        testTag = "in_call_audio_route_button"
+                                    )
+                                    DropdownMenu(
+                                        expanded = showAudioMenu,
+                                        onDismissRequest = { showAudioMenu = false }
+                                    ) {
+                                        callState.availableAudioRoutes.forEach { route ->
+                                            DropdownMenuItem(
+                                                text = { Text(route.label) },
+                                                onClick = {
+                                                    onSelectAudioRoute(route)
+                                                    showAudioMenu = false
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }

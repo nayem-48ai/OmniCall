@@ -17,6 +17,14 @@ import com.example.domain.model.SimSlotInfo
  */
 class SimSubscriptionDetector(private val context: Context) {
 
+    @Volatile
+    private var cachedSims: List<SimSlotInfo> = emptyList()
+
+    fun getCachedSims(): List<SimSlotInfo> {
+        val snapshot = cachedSims
+        return if (snapshot.isNotEmpty()) snapshot else detectActiveSims()
+    }
+
     @SuppressLint("MissingPermission")
     fun detectActiveSims(): List<SimSlotInfo> {
         val hasPhoneState = ContextCompat.checkSelfPermission(
@@ -25,6 +33,7 @@ class SimSubscriptionDetector(private val context: Context) {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasPhoneState) {
+            cachedSims = emptyList()
             return emptyList()
         }
 
@@ -51,7 +60,7 @@ class SimSubscriptionDetector(private val context: Context) {
             subscriptionManager.activeSubscriptionInfoList.orEmpty()
         }.getOrDefault(emptyList())
 
-        return subscriptions.sortedBy { it.simSlotIndex }.mapIndexed { idx, sub ->
+        val detected = subscriptions.sortedBy { it.simSlotIndex }.mapIndexed { idx, sub ->
             val matchedHandle = phoneAccounts.getOrNull(idx)?.id
             val phoneNum = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 runCatching { subscriptionManager.getPhoneNumber(sub.subscriptionId) }.getOrDefault("")
@@ -69,6 +78,8 @@ class SimSubscriptionDetector(private val context: Context) {
                 phoneAccountHandleId = matchedHandle
             )
         }
+        cachedSims = detected
+        return detected
     }
 
     @SuppressLint("MissingPermission")

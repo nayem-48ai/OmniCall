@@ -319,12 +319,16 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
         isOnHold = hold
     }
 
-    fun setAudioRoute(route: AudioRouteType) {
+    fun setAudioRoute(route: AudioRouteType, isTelecomManaged: Boolean = false) {
         when (route) {
             AudioRouteType.SPEAKER -> {
                 setCommunicationDeviceByType(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
                 @Suppress("DEPRECATION")
-                audioManager.isSpeakerphoneOn = true
+                audioManager.apply {
+                    isBluetoothScoOn = false
+                    stopBluetoothSco()
+                    isSpeakerphoneOn = true
+                }
             }
             AudioRouteType.BLUETOOTH -> {
                 setCommunicationDeviceByType(AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
@@ -338,10 +342,18 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
             AudioRouteType.WIRED_HEADSET -> {
                 setCommunicationDeviceByType(AudioDeviceInfo.TYPE_WIRED_HEADSET)
                 @Suppress("DEPRECATION")
-                audioManager.isSpeakerphoneOn = false
+                audioManager.apply {
+                    isSpeakerphoneOn = false
+                    isBluetoothScoOn = false
+                    stopBluetoothSco()
+                }
             }
             AudioRouteType.EARPIECE -> {
-                setCommunicationDeviceByType(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+                if (isTelecomManaged && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    runCatching { audioManager.clearCommunicationDevice() }
+                } else {
+                    setCommunicationDeviceByType(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+                }
                 @Suppress("DEPRECATION")
                 audioManager.apply {
                     isSpeakerphoneOn = false
@@ -355,14 +367,20 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
     fun getAvailableAudioRoutes(): List<AudioRouteType> {
         val routes = mutableListOf(AudioRouteType.EARPIECE, AudioRouteType.SPEAKER)
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        if (outputs.any {
+        val commDevices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { audioManager.availableCommunicationDevices }.getOrDefault(emptyList())
+        } else emptyList()
+        val allDevices = outputs.toList() + commDevices
+
+        if (allDevices.any {
                 it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
             }
         ) {
             routes.add(AudioRouteType.BLUETOOTH)
         }
-        if (outputs.any {
+        if (allDevices.any {
                 it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                     it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
                     it.type == AudioDeviceInfo.TYPE_USB_HEADSET
@@ -380,9 +398,18 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
 
     private fun setCommunicationDeviceByType(deviceType: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val match = audioManager.availableCommunicationDevices.firstOrNull { it.type == deviceType }
+            val devices = audioManager.availableCommunicationDevices
+            val match = devices.firstOrNull { it.type == deviceType }
+                ?: if (deviceType == AudioDeviceInfo.TYPE_WIRED_HEADSET) {
+                    devices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                            it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                    }
+                } else if (deviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                    devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLE_HEADSET }
+                } else null
             if (match != null) {
-                audioManager.setCommunicationDevice(match)
+                runCatching { audioManager.setCommunicationDevice(match) }
             }
         }
     }

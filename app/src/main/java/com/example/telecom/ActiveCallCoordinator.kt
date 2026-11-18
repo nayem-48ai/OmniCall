@@ -94,6 +94,8 @@ class ActiveCallCoordinator(
     private var activeCallDirection: CallDirection = CallDirection.OUTGOING
     private var currentCallLogged: Boolean = false
     private var autoRecordingTriggeredForCallId: String? = null
+    @Volatile
+    private var lastExplicitAudioSelectMs: Long = 0L
 
     private val dtmfToneGenerator: ToneGenerator? by lazy {
         runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 70) }.getOrNull()
@@ -260,13 +262,31 @@ class ActiveCallCoordinator(
         scope.launch {
             val info = contactsRepository.lookupContactInfo(numberOrUri)
             if (info != null) {
+                val queryDigits = numberOrUri.filter(Char::isDigit)
+                var shouldRefreshIncomingNotif = false
+                var notifName = info.displayName
+                var notifHandle = numberOrUri
+                var notifBadge = ""
                 _activeCall.update { current ->
-                    if (current.remoteHandle == numberOrUri) {
+                    val currentDigits = current.remoteHandle.filter(Char::isDigit)
+                    val matchesHandle = current.remoteHandle == numberOrUri ||
+                        (queryDigits.length >= 7 && currentDigits.length >= 7 &&
+                            (currentDigits == queryDigits || currentDigits.takeLast(8) == queryDigits.takeLast(8)))
+                    if (matchesHandle) {
+                        if (current.lifecycle == CallLifecycleState.RINGING_INCOMING) {
+                            shouldRefreshIncomingNotif = true
+                            notifName = info.displayName
+                            notifHandle = current.remoteHandle
+                            notifBadge = current.routeBadge
+                        }
                         current.copy(
-                            displayName = info.displayName,
+                            displayName = info.displayName.ifBlank { current.displayName },
                             remotePhotoUri = info.photoUri ?: current.remotePhotoUri
                         )
                     } else current
+                }
+                if (shouldRefreshIncomingNotif) {
+                    notificationManager.showIncomingCallNotification(notifName, notifHandle, notifBadge)
                 }
             }
         }
@@ -295,8 +315,9 @@ class ActiveCallCoordinator(
 
         activeCallDirection = CallDirection.INCOMING
         currentCallLogged = false
-        val account = activeSipAccount
-        val badge = if (account != null) "${account.displayName} • ${account.transport.label}" else "SIP VoIP"
+        val account = event.account
+        activeSipAccount = account
+        val badge = "${account.displayName} • ${account.transport.label}"
         val info = contactsRepository.lookupContactInfo(event.fromUri)
         val resolvedName = info?.displayName ?: event.displayName
 
@@ -441,17 +462,52 @@ class ActiveCallCoordinator(
     }
 
     fun selectAudioRoute(route: AudioRouteType) {
-        _activeCall.update { it.copy(audioRoute = route) }
-        if (_activeCall.value.sourceType == CallSourceType.SIP) {
-            rtpAudioEngine.setAudioRoute(route)
+        lastExplicitAudioSelectMs = System.currentTimeMillis()
+        _activeCall.update {
+            it.copy(
+                audioRoute = route,
+                availableAudioRoutes = (it.availableAudioRoutes + rtpAudioEngine.getAvailableAudioRoutes()).distinct()
+            )
+        }
+        applyAudioRouteToHardware(route, _activeCall.value.sourceType)
+    }
+
+    private fun applyAudioRouteToHardware(route: AudioRouteType, sourceType: CallSourceType) {
+        if (sourceType == CallSourceType.SIP) {
+            rtpAudioEngine.setAudioRoute(route, isTelecomManaged = false)
         } else {
             nativeInCallServiceRef?.get()?.applyAudioRoute(route)
-                ?: rtpAudioEngine.setAudioRoute(route)
+            rtpAudioEngine.setAudioRoute(route, isTelecomManaged = true)
         }
     }
 
-    fun onSystemAudioRouteChanged(route: AudioRouteType) {
-        _activeCall.update { it.copy(audioRoute = route) }
+    fun onSystemAudioRouteChanged(
+        route: AudioRouteType,
+        supportedRoutes: List<AudioRouteType> = emptyList()
+    ) {
+        val current = _activeCall.value
+        val updatedRoutes = if (supportedRoutes.isNotEmpty()) supportedRoutes else current.availableAudioRoutes
+
+        // Guard against transient Telecom/HAL EARPIECE callbacks overriding user Speaker selection
+        // right when Speaker is toggled or when call recording initializes AudioRecord/MediaRecorder.
+        val withinGuardWindow = (System.currentTimeMillis() - lastExplicitAudioSelectMs) < 1500L
+        if (withinGuardWindow && route == AudioRouteType.EARPIECE && current.audioRoute != AudioRouteType.EARPIECE) {
+            _activeCall.update { it.copy(availableAudioRoutes = updatedRoutes) }
+            applyAudioRouteToHardware(current.audioRoute, current.sourceType)
+            return
+        }
+
+        _activeCall.update {
+            it.copy(
+                audioRoute = route,
+                availableAudioRoutes = updatedRoutes
+            )
+        }
+    }
+
+    fun onAvailableAudioRoutesChanged(routes: List<AudioRouteType>) {
+        if (routes.isEmpty()) return
+        _activeCall.update { it.copy(availableAudioRoutes = routes.distinct()) }
     }
 
     /**
@@ -604,12 +660,25 @@ class ActiveCallCoordinator(
             recordingEngine = prefs.recordingEngine
         )
         if (started) {
+            val activeRoute = _activeCall.value.audioRoute
+            val sourceType = _activeCall.value.sourceType
             _activeCall.update {
                 it.copy(
                     isRecording = true,
                     recordingDurationSec = 0,
                     statusMessage = "Recording (${prefs.recordingType.shortLabel})..."
                 )
+            }
+            if (activeRoute != AudioRouteType.EARPIECE) {
+                lastExplicitAudioSelectMs = System.currentTimeMillis()
+                applyAudioRouteToHardware(activeRoute, sourceType)
+                scope.launch {
+                    delay(180L)
+                    val latest = _activeCall.value
+                    if (latest.audioRoute != AudioRouteType.EARPIECE && latest.lifecycle != CallLifecycleState.IDLE) {
+                        applyAudioRouteToHardware(latest.audioRoute, latest.sourceType)
+                    }
+                }
             }
         } else {
             VoipCallForegroundService.startOrUpdate(
@@ -648,7 +717,7 @@ class ActiveCallCoordinator(
         isIncoming: Boolean
     ) {
         val existing = _activeCall.value
-        val sims = simDetector.detectActiveSims()
+        val sims = simDetector.getCachedSims().ifEmpty { simDetector.detectActiveSims() }
         val matchedSim = sims.firstOrNull { it.phoneAccountHandleId == accountHandleId }
             ?: sims.firstOrNull()
 
@@ -668,26 +737,40 @@ class ActiveCallCoordinator(
             System.currentTimeMillis()
         } else wasConnected
 
+        val resolvedDisplayName = existing.displayName.takeIf {
+            it.isNotBlank() && it != remoteHandle && it != "Unknown"
+        } ?: displayName
+
+        val availableRoutes = if (existing.availableAudioRoutes.size > 2) {
+            existing.availableAudioRoutes
+        } else {
+            rtpAudioEngine.getAvailableAudioRoutes()
+        }
+
         _activeCall.value = existing.copy(
             callId = existing.callId.ifBlank { UUID.randomUUID().toString() },
             remoteHandle = remoteHandle,
-            displayName = existing.displayName.takeIf { it.isNotBlank() && it != remoteHandle } ?: displayName,
+            displayName = resolvedDisplayName,
+            remotePhotoUri = existing.remotePhotoUri,
             sourceType = sourceType,
             routeBadge = routeBadge,
             lifecycle = lifecycle,
             isIncoming = isIncoming,
             isOnHold = lifecycle == CallLifecycleState.ON_HOLD,
-            availableAudioRoutes = rtpAudioEngine.getAvailableAudioRoutes(),
+            availableAudioRoutes = availableRoutes,
             telemetry = existing.telemetry.copy(
                 codecName = "Cellular HD",
                 transportLabel = matchedSim?.shortLabel ?: sourceType.label
             ),
             connectedAtEpochMs = connectedAt
         )
-        resolveContactInfoAsync(remoteHandle)
+
+        if (existing.remotePhotoUri == null || existing.displayName == remoteHandle || existing.remoteHandle != remoteHandle) {
+            resolveContactInfoAsync(remoteHandle)
+        }
 
         if (lifecycle == CallLifecycleState.RINGING_INCOMING) {
-            notificationManager.showIncomingCallNotification(displayName, remoteHandle, routeBadge)
+            notificationManager.showIncomingCallNotification(resolvedDisplayName, remoteHandle, routeBadge)
         } else {
             notificationManager.cancelIncomingNotification()
         }

@@ -249,10 +249,9 @@ class DualStreamCallRecorder(
         return when (recordingType) {
             RecordingType.INTERNAL_AND_EXTERNAL -> listOf(
                 MediaRecorder.AudioSource.VOICE_CALL,
-                MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.CAMCORDER,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.DEFAULT
             )
             RecordingType.ONLY_INTERNAL -> listOf(
@@ -260,14 +259,12 @@ class DualStreamCallRecorder(
                 MediaRecorder.AudioSource.VOICE_CALL,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 MediaRecorder.AudioSource.CAMCORDER,
-                MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                MediaRecorder.AudioSource.MIC
             )
             RecordingType.ONLY_EXTERNAL -> listOf(
                 MediaRecorder.AudioSource.VOICE_UPLINK,
                 MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.CAMCORDER,
                 MediaRecorder.AudioSource.DEFAULT
             )
@@ -280,7 +277,6 @@ class DualStreamCallRecorder(
                 MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 MediaRecorder.AudioSource.CAMCORDER,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.VOICE_CALL
             )
             RecordingType.ONLY_INTERNAL -> listOf(
@@ -291,8 +287,8 @@ class DualStreamCallRecorder(
             )
             RecordingType.ONLY_EXTERNAL -> listOf(
                 MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.CAMCORDER
             )
         }
     }
@@ -310,7 +306,7 @@ class DualStreamCallRecorder(
         startFromIndex: Int,
         requireNonZeroSignal: Boolean
     ): OpenedSimRecorder? {
-        val rates = listOf(44100, 16000, 48000, 8000)
+        val rates = listOf(16000, 44100, 48000, 8000)
         var firstInitializedSilentBackup: OpenedSimRecorder? = null
 
         for (srcIdx in startFromIndex until sources.size) {
@@ -642,17 +638,12 @@ class DualStreamCallRecorder(
     }
 
     /**
-     * Gentle adaptive gain for SIM microphone / acoustic capture so voices are clearly audible
-     * even when Android attenuates capture gain during MODE_IN_CALL.
+     * Dynamic adaptive gain normalizing quiet cellular helpline / earpiece-bleed capture up toward
+     * audible speech levels while keeping pure floor hiss un-amplified.
      */
     private fun applyAdaptiveVoiceGain(samples: ShortArray, maxAmp: Int): ShortArray {
-        if (maxAmp <= 0 || maxAmp > 9500) return samples
-        val gain = when {
-            maxAmp < 800 -> 4.0f
-            maxAmp < 2500 -> 3.0f
-            maxAmp < 6000 -> 2.0f
-            else -> 1.4f
-        }
+        if (maxAmp <= 12 || maxAmp > 12000) return samples
+        val gain = (12000f / maxAmp.toFloat()).coerceIn(1.2f, 18.0f)
         return ShortArray(samples.size) { idx ->
             (samples[idx] * gain).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }

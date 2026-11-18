@@ -140,17 +140,22 @@ class ContactsRepository(private val context: Context) {
 
     suspend fun lookupContactInfo(phoneNumber: String): ContactLookupResult? = withContext(Dispatchers.IO) {
         if (!hasContactsPermission() || phoneNumber.isBlank()) return@withContext null
-        runCatching {
+        val cleaned = phoneNumber.trim().removePrefix("sip:").substringBefore("@").trim()
+        if (cleaned.isBlank()) return@withContext null
+
+        // 1. Primary fast lookup via Android PhoneLookup
+        val primaryHit = runCatching {
             val uri = Uri.withAppendedPath(
                 ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
-                Uri.encode(phoneNumber)
+                Uri.encode(cleaned)
             )
             context.contentResolver.query(
                 uri,
                 arrayOf(
                     ContactsContract.PhoneLookup.DISPLAY_NAME,
                     ContactsContract.PhoneLookup.PHOTO_URI,
-                    ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI
+                    ContactsContract.PhoneLookup.PHOTO_THUMBNAIL_URI,
+                    ContactsContract.PhoneLookup.CONTACT_ID
                 ),
                 null,
                 null,
@@ -160,15 +165,87 @@ class ContactsRepository(private val context: Context) {
                     val name = cursor.getString(0).orEmpty()
                     val fullPhoto = cursor.getString(1)?.takeIf { it.isNotBlank() }
                     val thumbPhoto = cursor.getString(2)?.takeIf { it.isNotBlank() }
+                    val contactId = if (!cursor.isNull(3)) cursor.getLong(3) else -1L
                     if (name.isNotBlank()) {
                         ContactLookupResult(
                             displayName = name,
-                            photoUri = fullPhoto ?: thumbPhoto
+                            photoUri = resolveReadablePhotoUri(fullPhoto, thumbPhoto, contactId)
                         )
                     } else null
                 } else null
             }
         }.getOrNull()
+        if (primaryHit != null) return@withContext primaryHit
+
+        // 2. Fallback: normalized trailing-digits lookup for local vs +country formatted numbers
+        val queryDigits = cleaned.filter { it.isDigit() }
+        val targetTail = if (queryDigits.length >= 8) queryDigits.takeLast(9) else queryDigits
+        if (targetTail.isEmpty()) return@withContext null
+
+        runCatching {
+            context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME_PRIMARY,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ContactsContract.CommonDataKinds.Phone.PHOTO_URI,
+                    ContactsContract.CommonDataKinds.Phone.PHOTO_THUMBNAIL_URI,
+                    ContactsContract.CommonDataKinds.Phone.CONTACT_ID
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(0).orEmpty()
+                    val rawNum = cursor.getString(1).orEmpty()
+                    val rowDigits = rawNum.filter { it.isDigit() }
+                    val rowTail = if (rowDigits.length >= 8) rowDigits.takeLast(9) else rowDigits
+                    val matches = rowTail == targetTail ||
+                        (rowDigits.isNotEmpty() && rowDigits == queryDigits)
+                    if (matches && name.isNotBlank()) {
+                        val fullPhoto = cursor.getString(2)?.takeIf { it.isNotBlank() }
+                        val thumbPhoto = cursor.getString(3)?.takeIf { it.isNotBlank() }
+                        val contactId = if (!cursor.isNull(4)) cursor.getLong(4) else -1L
+                        return@withContext ContactLookupResult(
+                            displayName = name,
+                            photoUri = resolveReadablePhotoUri(fullPhoto, thumbPhoto, contactId)
+                        )
+                    }
+                }
+                null
+            }
+        }.getOrNull()
+    }
+
+    private fun resolveReadablePhotoUri(
+        fullPhoto: String?,
+        thumbPhoto: String?,
+        contactId: Long
+    ): String? {
+        val candidates = buildList {
+            if (!fullPhoto.isNullOrBlank()) add(fullPhoto)
+            if (!thumbPhoto.isNullOrBlank() && thumbPhoto != fullPhoto) add(thumbPhoto)
+            if (contactId > 0L) {
+                val contactPhotoUri = android.content.ContentUris.withAppendedId(
+                    ContactsContract.Contacts.CONTENT_URI,
+                    contactId
+                ).buildUpon()
+                    .appendPath(ContactsContract.Contacts.Photo.CONTENT_DIRECTORY)
+                    .build()
+                    .toString()
+                add(contactPhotoUri)
+            }
+        }
+        for (candidate in candidates) {
+            val readable = runCatching {
+                context.contentResolver.openAssetFileDescriptor(Uri.parse(candidate), "r")?.use {
+                    it.length != 0L
+                } ?: false
+            }.getOrDefault(false)
+            if (readable) return candidate
+        }
+        return fullPhoto ?: thumbPhoto
     }
 
     suspend fun lookupDisplayName(phoneNumber: String): String? =

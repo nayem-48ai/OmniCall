@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -9,6 +10,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +42,8 @@ fun ContactAvatar(
     modifier: Modifier = Modifier
 ) {
     val initial = displayName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+    var photoLoaded by remember(photoUri) { mutableStateOf(false) }
+
     Box(
         modifier = modifier
             .size(size)
@@ -51,19 +58,26 @@ fun ContactAvatar(
             ),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = initial,
-            fontSize = fontSize,
-            fontWeight = FontWeight.Bold,
-            color = contentColor
-        )
-        if (!photoUri.isNullOrBlank()) {
-            AsyncImage(
-                model = photoUri,
-                contentDescription = displayName,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+        if (!photoLoaded) {
+            Text(
+                text = initial,
+                fontSize = fontSize,
+                fontWeight = FontWeight.Bold,
+                color = contentColor
             )
+        }
+        if (!photoUri.isNullOrBlank()) {
+            val parsedUri = remember(photoUri) { runCatching { Uri.parse(photoUri) }.getOrNull() }
+            if (parsedUri != null) {
+                AsyncImage(
+                    model = parsedUri,
+                    contentDescription = displayName,
+                    contentScale = ContentScale.Crop,
+                    onSuccess = { photoLoaded = true },
+                    onError = { photoLoaded = false },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
 }
