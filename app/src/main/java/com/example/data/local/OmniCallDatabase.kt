@@ -14,7 +14,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RecordingEntity::class,
         BlockedNumberEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class OmniCallDatabase : RoomDatabase() {
@@ -49,6 +49,12 @@ abstract class OmniCallDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sip_accounts ADD COLUMN proxyHost TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): OmniCallDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -56,7 +62,7 @@ abstract class OmniCallDatabase : RoomDatabase() {
                     OmniCallDatabase::class.java,
                     "omnicall_local.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -97,8 +97,9 @@ data class SipAccountModel(
     val username: String,
     val port: Int,
     val transport: SipTransport,
+    val proxyHost: String = "",
     val autoDiscovered: Boolean = true,
-    val preferredCodecs: List<String> = listOf("G722", "PCMU", "PCMA"),
+    val preferredCodecs: List<String> = listOf("PCMU", "PCMA"),
     val isEnabled: Boolean = true,
     val isDefault: Boolean = true,
     val status: SipRegistrationStatus = SipRegistrationStatus.UNREGISTERED,
@@ -112,6 +113,8 @@ data class SipAccountModel(
     val lastBalanceUpdatedMs: Long? = null
 ) {
     val sipUri: String get() = "sip:$username@$domain"
+
+    fun effectiveProxyHost(): String = proxyHost.trim().ifBlank { domain.trim() }
 
     fun resolvedBalanceUrl(): String = when (balancePreset) {
         SipBalancePreset.NONE -> ""

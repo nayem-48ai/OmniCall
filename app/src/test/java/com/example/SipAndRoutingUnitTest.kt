@@ -2,6 +2,9 @@ package com.example
 
 import com.example.audio.AudioCodecUtils
 import com.example.data.repository.BlocklistRepository
+import com.example.data.repository.ContactItem
+import com.example.data.repository.ContactPhoneNumber
+import com.example.data.repository.VcfContactsCodec
 import com.example.domain.model.AvailableCallingEnvironment
 import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.RecordingEngine
@@ -11,9 +14,11 @@ import com.example.domain.model.SipAccountModel
 import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipTransport
 import com.example.sip.BalanceResponseParser
+import com.example.sip.SipClientEngine
 import com.example.sip.SipMessageCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -98,14 +103,20 @@ class SipAndRoutingUnitTest {
     }
 
     @Test
-    fun sdpNegotiation_selectsWidebandG722WhenOffered() {
+    fun sdpNegotiation_selectsPcmuMatchingRtpEngineAndParsesRemoteG722() {
         val sdp = SipMessageCodec.buildSdpOffer("192.168.1.50", 40002, preferWideband = true)
         val parsed = SipMessageCodec.parseSdp(sdp)
         assertNotNull(parsed)
         assertEquals("192.168.1.50", parsed!!.remoteIp)
         assertEquals(40002, parsed.remotePort)
-        assertEquals("G722", parsed.codecName)
-        assertEquals(9, parsed.payloadType)
+        assertEquals("PCMU", parsed.codecName)
+        assertEquals(0, parsed.payloadType)
+
+        val remoteOnlyG722 = "v=0\r\no=- 1 1 IN IP4 203.0.113.5\r\ns=-\r\nc=IN IP4 203.0.113.5\r\nt=0 0\r\nm=audio 50000 RTP/AVP 9 101\r\na=rtpmap:9 G722/8000\r\na=rtpmap:101 telephone-event/8000\r\n"
+        val parsedRemote = SipMessageCodec.parseSdp(remoteOnlyG722)
+        assertNotNull(parsedRemote)
+        assertEquals("G722", parsedRemote!!.codecName)
+        assertEquals(9, parsedRemote.payloadType)
     }
 
     @Test
@@ -233,5 +244,143 @@ class SipAndRoutingUnitTest {
         assertTrue(invite.contains("Via: SIP/2.0/UDP 10.0.0.15:45120;rport;branch=z9hG4bK-inv"))
         assertTrue(invite.contains("Contact: <sip:09639170537@103.45.67.89:61234;transport=udp>"))
         assertTrue(invite.contains("c=IN IP4 10.0.0.15"))
+    }
+
+    @Test
+    fun sipPreDialSyntaxValidation_catchesInvalidConfigAndAcceptsValidSettings() {
+        val validAccount = SipAccountModel(
+            id = 1,
+            displayName = "ICC",
+            domain = "icctalk.com",
+            proxyHost = "sbc.icctalk.com",
+            username = "09639170537",
+            port = 5060,
+            transport = SipTransport.UDP,
+            isEnabled = true
+        )
+        assertNull(SipClientEngine.validateAccountSettingsSyntax(validAccount, "01712345678"))
+        assertEquals("sbc.icctalk.com", validAccount.effectiveProxyHost())
+
+        val disabledError = SipClientEngine.validateAccountSettingsSyntax(
+            validAccount.copy(isEnabled = false),
+            "01712345678"
+        )
+        assertNotNull(disabledError)
+        assertTrue(disabledError!!.contains("disabled"))
+
+        val badPortError = SipClientEngine.validateAccountSettingsSyntax(
+            validAccount.copy(port = 70000, transport = SipTransport.TCP),
+            "01712345678"
+        )
+        assertNotNull(badPortError)
+        assertTrue(badPortError!!.contains("TCP"))
+
+        val badProxyError = SipClientEngine.validateAccountSettingsSyntax(
+            validAccount.copy(proxyHost = "bad host/path"),
+            "01712345678"
+        )
+        assertNotNull(badProxyError)
+        assertTrue(badProxyError!!.contains("proxy"))
+
+        val blankDestError = SipClientEngine.validateAccountSettingsSyntax(validAccount, "01712 345678")
+        assertNotNull(blankDestError)
+    }
+
+    @Test
+    fun sipRfc3261_ackCancelBranchReuseAndRecordRoutePreservation() {
+        val fixedBranch = "z9hG4bK-fixed-invite-branch"
+        val routeSet = listOf("<sip:edge1.icctalk.com:5060;lr>", "<sip:core.icctalk.com;lr>")
+        val ack = SipMessageCodec.buildAckRequest(
+            targetUri = "sip:01782961419@icctalk.com",
+            fromHeader = "<sip:09639170537@icctalk.com>;tag=t1",
+            toHeader = "<sip:01782961419@icctalk.com>;tag=t2",
+            localIp = "10.0.0.15",
+            localSipPort = 45120,
+            transport = SipTransport.UDP,
+            callId = "c-1@icctalk.com",
+            cseq = 12,
+            branch = fixedBranch,
+            routeSet = routeSet
+        )
+        assertTrue(ack.contains("branch=$fixedBranch"))
+        assertTrue(ack.contains("Route: <sip:edge1.icctalk.com:5060;lr>"))
+        assertTrue(ack.contains("Route: <sip:core.icctalk.com;lr>"))
+
+        val cancel = SipMessageCodec.buildSimpleInDialogRequest(
+            method = "CANCEL",
+            targetUri = "sip:01782961419@icctalk.com",
+            fromHeader = "<sip:09639170537@icctalk.com>;tag=t1",
+            toHeader = "<sip:01782961419@icctalk.com>",
+            localIp = "10.0.0.15",
+            localSipPort = 45120,
+            transport = SipTransport.TLS,
+            callId = "c-1@icctalk.com",
+            cseq = 12,
+            branch = fixedBranch
+        )
+        assertTrue(cancel.startsWith("CANCEL sip:01782961419@icctalk.com;transport=tls SIP/2.0"))
+        assertTrue(cancel.contains("branch=$fixedBranch"))
+        assertTrue(cancel.contains("CSeq: 12 CANCEL"))
+    }
+
+    @Test
+    fun vcfContactsCodec_exportsAndParsesMultilineAndQuotedPrintableCards() {
+        val sampleContacts = listOf(
+            ContactItem(
+                id = 1L,
+                lookupKey = "k1",
+                displayName = "Ayesha Rahman",
+                isFavorite = true,
+                phoneNumbers = listOf(
+                    ContactPhoneNumber("+8801316658359", "Mobile", isDefault = true),
+                    ContactPhoneNumber("01712345678", "Work", isDefault = false)
+                ),
+                photoUri = null
+            ),
+            ContactItem(
+                id = 2L,
+                lookupKey = "k2",
+                displayName = "Ajrin Kona",
+                isFavorite = false,
+                phoneNumbers = listOf(
+                    ContactPhoneNumber("+8801782961419", "Home", isDefault = false)
+                ),
+                photoUri = null
+            )
+        )
+
+        val vcf = VcfContactsCodec.generateVcf(sampleContacts)
+        assertTrue(vcf.contains("BEGIN:VCARD"))
+        assertTrue(vcf.contains("FN:Ayesha Rahman"))
+        assertTrue(vcf.contains("TEL;TYPE=CELL;TYPE=PREF:+8801316658359"))
+
+        val parsedExported = VcfContactsCodec.parseVcf(vcf)
+        assertEquals(2, parsedExported.size)
+        assertEquals("Ayesha Rahman", parsedExported[0].displayName)
+        assertEquals(2, parsedExported[0].phoneNumbers.size)
+        assertEquals("Work", parsedExported[0].phoneNumbers[1].typeLabel)
+        assertTrue(parsedExported[0].phoneNumbers[0].isDefault)
+
+        // Verify vCard 2.1 QUOTED-PRINTABLE + line unfolding + EMAIL/ORG support
+        val legacyVcf = """
+            BEGIN:VCARD
+            VERSION:2.1
+            N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:;=E0=A6=B0=E0=A6=B9=E0=A6=BF=
+            =E0=A6=AE;;;
+            FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:=E0=A6=B0=E0=A6=B9=E0=A6=BF=
+            =E0=A6=AE
+            TEL;CELL;PREF:+8801911223344
+            EMAIL:rahim@example.com
+            ORG:Omni
+             Labs
+            END:VCARD
+        """.trimIndent()
+        val parsedLegacy = VcfContactsCodec.parseVcf(legacyVcf)
+        assertEquals(1, parsedLegacy.size)
+        assertEquals("রহিম", parsedLegacy[0].displayName)
+        assertEquals("+8801911223344", parsedLegacy[0].phoneNumbers.first().number)
+        assertEquals("Mobile", parsedLegacy[0].phoneNumbers.first().typeLabel)
+        assertEquals("rahim@example.com", parsedLegacy[0].email)
+        assertEquals("OmniLabs", parsedLegacy[0].organization)
     }
 }

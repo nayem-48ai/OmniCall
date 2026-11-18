@@ -357,18 +357,20 @@ private fun OmniCallRoot(
                     composable<ContactsRoute> {
                         ContactsScreen(
                             uiState = contactsState,
-                            onSearchChange = contactsViewModel::setSearchQuery,
+                            viewModel = contactsViewModel,
                             onRequestPermission = {
                                 contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
                             },
-                            onSelectContact = contactsViewModel::openContactDetail,
-                            onCloseContactDetail = contactsViewModel::closeContactDetail,
                             onCallNumber = { number ->
                                 dialerViewModel.initiateCall(number)
                             },
                             onEditInKeypad = { number ->
                                 dialerViewModel.setNumberInput(number)
                                 navigateToTab(DialerRoute)
+                            },
+                            onContactsImported = {
+                                recentsViewModel.refreshContactsIndex()
+                                blocklistViewModel.refreshContacts()
                             }
                         )
                     }

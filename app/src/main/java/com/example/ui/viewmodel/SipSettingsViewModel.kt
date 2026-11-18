@@ -197,14 +197,18 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
                             }
                         }
                         is AutoConfigProgress.Success -> {
-                            val label = f.displayName.trim().ifBlank { "$user@$host" }
+                            val cleanDomainHost = host.removePrefix("sip:").substringBefore("/").substringBefore(":").trim()
+                            val label = f.displayName.trim().ifBlank { "$user@$cleanDomainHost" }
                             val model = SipAccountModel(
                                 id = f.editingAccountId,
                                 displayName = label,
-                                domain = progress.resolvedHost,
+                                domain = cleanDomainHost.ifBlank { progress.resolvedHost },
                                 username = user,
                                 port = progress.port,
                                 transport = progress.transport,
+                                proxyHost = if (!progress.resolvedHost.equals(cleanDomainHost, ignoreCase = true)) {
+                                    progress.resolvedHost
+                                } else "",
                                 autoDiscovered = true,
                                 isEnabled = true,
                                 isDefault = true,

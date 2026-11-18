@@ -1,5 +1,10 @@
 package com.example.ui.contacts
 
+import android.Manifest
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -34,6 +39,7 @@ import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.Dialpad
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -45,11 +51,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,6 +68,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,18 +78,79 @@ import com.example.data.repository.ContactItem
 import com.example.ui.components.ContactAvatar
 import com.example.ui.theme.SignalWarning
 import com.example.ui.viewmodel.ContactsUiState
+import com.example.ui.viewmodel.ContactsViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun ContactsScreen(
     uiState: ContactsUiState,
-    onSearchChange: (String) -> Unit,
+    viewModel: ContactsViewModel,
     onRequestPermission: () -> Unit,
-    onSelectContact: (ContactItem) -> Unit,
-    onCloseContactDetail: () -> Unit,
     onCallNumber: (String) -> Unit,
     onEditInKeypad: (String) -> Unit,
+    onContactsImported: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val exportDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/vcard")
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val selectedCount = uiState.transfer.exportSelectedIds.size
+        val vcfPayload = viewModel.buildSelectedExportVcf()
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(vcfPayload.toByteArray(Charsets.UTF_8))
+                        stream.flush()
+                    } ?: error("Null output stream")
+                    true
+                }.getOrDefault(false)
+            }
+            viewModel.markExportCompleted(selectedCount, ok)
+        }
+    }
+
+    val importDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                runCatching {
+                    val fileName = resolveDisplayFileName(context, uri)
+                    val content = context.contentResolver.openInputStream(uri)?.use { stream ->
+                        stream.bufferedReader(Charsets.UTF_8).readText()
+                    } ?: ""
+                    fileName to content
+                }.getOrNull()
+            }
+            if (loaded == null) {
+                viewModel.showTransferError("Unable to open selected .vcf file")
+            } else {
+                viewModel.loadParsedVcfForImport(loaded.first, loaded.second)
+            }
+        }
+    }
+
+    val writeContactsPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.importSelectedVcfContacts(onComplete = onContactsImported)
+        } else {
+            viewModel.showTransferError("Write Contacts permission is required to save imported contacts.")
+        }
+    }
+
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter
@@ -105,14 +175,66 @@ fun ContactsScreen(
                 if (uiState.hasPermission) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.secondaryContainer
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable { viewModel.openTransferMenu() }
+                            .minimumInteractiveComponentSize()
+                            .testTag("contacts_transfer_pill")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SwapVert,
+                                contentDescription = "Import or export contacts",
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = "${uiState.allContacts.size} contacts",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
+            }
+
+            uiState.transfer.statusMessage?.let { status ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "${uiState.allContacts.size} contacts",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                            text = status,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.weight(1f)
                         )
+                        IconButton(
+                            onClick = viewModel::clearTransferStatus,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Dismiss",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -201,7 +323,7 @@ fun ContactsScreen(
                     ) {
                         ContactsPillSearchBar(
                             query = uiState.searchQuery,
-                            onQueryChange = onSearchChange,
+                            onQueryChange = viewModel::setSearchQuery,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp)
@@ -259,7 +381,7 @@ fun ContactsScreen(
                                     items(uiState.favoriteContacts, key = { "fav_${it.id}" }) { fav ->
                                         FavoriteContactCard(
                                             contact = fav,
-                                            onClick = { onSelectContact(fav) }
+                                            onClick = { viewModel.openContactDetail(fav) }
                                         )
                                     }
                                 }
@@ -278,7 +400,7 @@ fun ContactsScreen(
                         items(uiState.allContacts, key = { it.id }) { contact ->
                             ContactRowCard(
                                 contact = contact,
-                                onOpenDetail = { onSelectContact(contact) },
+                                onOpenDetail = { viewModel.openContactDetail(contact) },
                                 onCallPrimary = {
                                     if (contact.primaryNumber.isNotBlank()) {
                                         onCallNumber(contact.primaryNumber)
@@ -298,16 +420,72 @@ fun ContactsScreen(
         ContactDetailSheet(
             contact = contact,
             onCallNumber = { number ->
-                onCloseContactDetail()
+                viewModel.closeContactDetail()
                 onCallNumber(number)
             },
             onEditInKeypad = { number ->
-                onCloseContactDetail()
+                viewModel.closeContactDetail()
                 onEditInKeypad(number)
             },
-            onDismiss = onCloseContactDetail
+            onDismiss = viewModel::closeContactDetail
         )
     }
+
+    if (uiState.transfer.showTransferMenu) {
+        ContactsTransferMenuSheet(
+            totalContacts = uiState.unfilteredContacts.size,
+            onSelectExport = viewModel::openExportSheet,
+            onSelectImport = {
+                viewModel.closeTransferMenu()
+                importDocumentLauncher.launch(arrayOf("text/x-vcard", "text/vcard", "*/*"))
+            },
+            onDismiss = viewModel::closeTransferMenu
+        )
+    }
+
+    if (uiState.transfer.showExportSheet) {
+        ExportContactsSheet(
+            contacts = uiState.unfilteredContacts,
+            selectedIds = uiState.transfer.exportSelectedIds,
+            onToggleSelect = viewModel::toggleExportSelection,
+            onSelectAll = viewModel::setAllExportSelected,
+            onConfirmExport = {
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                exportDocumentLauncher.launch("OmniCall_Contacts_$stamp.vcf")
+            },
+            onDismiss = viewModel::closeExportSheet
+        )
+    }
+
+    if (uiState.transfer.showImportSheet) {
+        ImportContactsPreviewSheet(
+            fileName = uiState.transfer.importFileName,
+            parsedContacts = uiState.transfer.parsedImportContacts,
+            selectedIds = uiState.transfer.importSelectedIds,
+            isBusy = uiState.transfer.isBusy,
+            onToggleSelect = viewModel::toggleImportSelection,
+            onSelectAll = viewModel::setAllImportSelected,
+            onConfirmImport = {
+                if (viewModel.hasWriteContactsPermission()) {
+                    viewModel.importSelectedVcfContacts(onComplete = onContactsImported)
+                } else {
+                    writeContactsPermLauncher.launch(Manifest.permission.WRITE_CONTACTS)
+                }
+            },
+            onDismiss = viewModel::closeImportSheet
+        )
+    }
+}
+
+private fun resolveDisplayFileName(context: android.content.Context, uri: Uri): String {
+    val queried = runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull()
+    return queried?.takeIf { it.isNotBlank() }
+        ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+        ?: "contacts.vcf"
 }
 
 @Composable

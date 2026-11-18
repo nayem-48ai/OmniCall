@@ -101,6 +101,14 @@ class DialerViewModel(
         )
     )
 
+    init {
+        viewModelScope.launch {
+            container.activeCallCoordinator.callErrorEvents.collect { errorMsg ->
+                _bannerMessage.value = errorMsg
+            }
+        }
+    }
+
     fun refreshHardwareEnvironment() {
         _simSlots.value = container.simSubscriptionDetector.detectActiveSims()
         _isDefaultDialer.value = container.telecomCallManager.isDefaultDialer()

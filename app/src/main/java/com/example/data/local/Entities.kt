@@ -12,6 +12,7 @@ data class SipAccountEntity(
     val username: String,
     val port: Int,
     val transport: String,
+    val proxyHost: String = "",
     val autoDiscovered: Boolean,
     val preferredCodecsCsv: String,
     val isEnabled: Boolean,

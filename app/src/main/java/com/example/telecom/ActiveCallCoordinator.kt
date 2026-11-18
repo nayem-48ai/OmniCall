@@ -31,14 +31,18 @@ import com.example.domain.model.SipAccountModel
 import com.example.sip.SdpMediaSpec
 import com.example.sip.SipClientEngine
 import com.example.sip.SipSignalingEvent
+import com.example.sip.SipTransportValidationResult
 import com.example.ui.call.IncomingCallActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -80,6 +84,9 @@ class ActiveCallCoordinator(
 
     private val _activeCall = MutableStateFlow(ActiveCallState())
     val activeCall: StateFlow<ActiveCallState> = _activeCall.asStateFlow()
+
+    private val _callErrorEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val callErrorEvents: SharedFlow<String> = _callErrorEvents.asSharedFlow()
 
     val isNearEar: StateFlow<Boolean> = proximityWakeLockManager.isNearEar
 
@@ -144,6 +151,7 @@ class ActiveCallCoordinator(
                     }
                     is SipSignalingEvent.CallFailed -> {
                         if (_activeCall.value.callId == event.callId) {
+                            _callErrorEvents.tryEmit(event.reason)
                             finalizeAndClearCall(event.reason)
                         }
                     }
@@ -208,62 +216,76 @@ class ActiveCallCoordinator(
 
             is ResolvedOutgoingRoute.SipAccount -> {
                 val account = route.account
-                activeSipAccount = account
-                activeCallDirection = CallDirection.OUTGOING
-                currentCallLogged = false
-                val callId = "sip_${UUID.randomUUID().toString().take(12)}"
-                localRtpPort = rtpAudioEngine.allocateLocalRtpPort()
-
-                _activeCall.value = ActiveCallState(
-                    callId = callId,
-                    remoteHandle = trimmed,
-                    displayName = trimmed,
-                    sourceType = CallSourceType.SIP,
-                    routeBadge = "${account.displayName} • ${account.transport.label}",
-                    lifecycle = CallLifecycleState.DIALING,
-                    isIncoming = false,
-                    availableAudioRoutes = rtpAudioEngine.getAvailableAudioRoutes(),
-                    telemetry = AudioQualityTelemetry(
-                        codecName = "Negotiating SDP...",
-                        transportLabel = "${account.transport.label}:${account.port}"
-                    ),
-                    statusMessage = "Sending SIP INVITE..."
-                )
-                resolveContactInfoAsync(trimmed)
-
-                VoipCallForegroundService.startOrUpdate(
-                    context = context,
-                    title = trimmed,
-                    subtitle = "Dialing via ${account.displayName}",
-                    isRecording = false
-                )
-
-                // Outgoing SIP calls are managed directly by OmniCall + VoipCallForegroundService
-                // so Android/OEM Telecom does not trap stale self-managed connections or show
-                // "Placing this call will end your OmniCall call." dialogs.
+                val sipDestination = if (trimmed.contains("@") || trimmed.startsWith("sip:", ignoreCase = true)) {
+                    trimmed
+                } else {
+                    trimmed.replace(Regex("[\\s()\\-]+"), "")
+                }
                 clearAllVoipConnections()
 
                 scope.launch {
-                    val prefs = prefsRepository.settingsFlow.first()
-                    val sent = sipClientEngine.placeOutgoingInvite(
-                        callId = callId,
-                        destination = trimmed,
-                        account = account,
-                        localRtpPort = localRtpPort,
-                        preferWideband = prefs.preferWidebandCodecs
-                    )
-                    if (!sent) {
-                        finalizeAndClearCall("Unable to reach SIP server ${account.domain}")
-                    } else {
-                        eventBus.publish(
-                            OmniCallEvent.CallStateChanged(
-                                callId,
-                                trimmed,
-                                CallSourceType.SIP,
-                                CallDirection.OUTGOING,
-                                CallLifecycleState.DIALING
+                    // Validate SIP proxy & UDP/TCP/TLS transport settings BEFORE transitioning to DIALING
+                    when (val validation = sipClientEngine.validateOutgoingTransport(account, sipDestination)) {
+                        is SipTransportValidationResult.Invalid -> {
+                            _callErrorEvents.emit(validation.reason)
+                            return@launch
+                        }
+                        is SipTransportValidationResult.Valid -> {
+                            activeSipAccount = account
+                            activeCallDirection = CallDirection.OUTGOING
+                            currentCallLogged = false
+                            val callId = "sip_${UUID.randomUUID().toString().take(12)}"
+                            localRtpPort = rtpAudioEngine.allocateLocalRtpPort()
+
+                            _activeCall.value = ActiveCallState(
+                                callId = callId,
+                                remoteHandle = sipDestination,
+                                displayName = trimmed,
+                                sourceType = CallSourceType.SIP,
+                                routeBadge = "${account.displayName} • ${validation.transport.label}",
+                                lifecycle = CallLifecycleState.DIALING,
+                                isIncoming = false,
+                                availableAudioRoutes = rtpAudioEngine.getAvailableAudioRoutes(),
+                                telemetry = AudioQualityTelemetry(
+                                    codecName = "Negotiating SDP...",
+                                    transportLabel = "${validation.transport.label}:${validation.port}"
+                                ),
+                                statusMessage = "Dialing via ${validation.transport.label}..."
                             )
-                        )
+                            resolveContactInfoAsync(trimmed)
+
+                            VoipCallForegroundService.startOrUpdate(
+                                context = context,
+                                title = trimmed,
+                                subtitle = "Dialing via ${account.displayName}",
+                                isRecording = false
+                            )
+
+                            val prefs = prefsRepository.settingsFlow.first()
+                            val sent = sipClientEngine.placeOutgoingInvite(
+                                callId = callId,
+                                destination = sipDestination,
+                                account = account,
+                                localRtpPort = localRtpPort,
+                                preferWideband = prefs.preferWidebandCodecs
+                            )
+                            if (!sent) {
+                                _callErrorEvents.emit(
+                                    "Unable to send SIP INVITE to ${account.effectiveProxyHost()}:${validation.port}"
+                                )
+                                finalizeAndClearCall("Unable to reach SIP server ${account.effectiveProxyHost()}")
+                            } else {
+                                eventBus.publish(
+                                    OmniCallEvent.CallStateChanged(
+                                        callId,
+                                        trimmed,
+                                        CallSourceType.SIP,
+                                        CallDirection.OUTGOING,
+                                        CallLifecycleState.DIALING
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -346,7 +368,15 @@ class ActiveCallCoordinator(
             statusMessage = "Incoming VoIP Call"
         )
 
-        telecomCallManager.notifyTelecomIncomingSipCall(event.fromUri, resolvedName, event.callId)
+        // Keep incoming SIP calls directly on OmniCall's IncomingCallActivity + CallStyle notification
+        // + VoipCallForegroundService so OEM Telecom layers never silently abort self-managed calls.
+        clearAllVoipConnections()
+        VoipCallForegroundService.startOrUpdate(
+            context = context,
+            title = resolvedName,
+            subtitle = "Incoming $badge",
+            isRecording = false
+        )
         notificationManager.showIncomingCallNotification(resolvedName, event.fromUri, badge)
         runCatching {
             context.startActivity(

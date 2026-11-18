@@ -47,6 +47,13 @@ class ContactsRepository(private val context: Context) {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    fun hasWriteContactsPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.WRITE_CONTACTS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     suspend fun loadContacts(): List<ContactItem> = withContext(Dispatchers.IO) {
         if (!hasContactsPermission()) return@withContext emptyList()
 
@@ -279,6 +286,110 @@ class ContactsRepository(private val context: Context) {
 
     suspend fun lookupDisplayName(phoneNumber: String): String? =
         lookupContactInfo(phoneNumber)?.displayName
+
+    suspend fun importVcfContacts(entries: List<VcfParsedContact>): Int = withContext(Dispatchers.IO) {
+        if (!hasWriteContactsPermission() || entries.isEmpty()) return@withContext 0
+        var importedCount = 0
+
+        for (entry in entries) {
+            val ops = ArrayList<android.content.ContentProviderOperation>()
+            ops.add(
+                android.content.ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                    .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                    .build()
+            )
+            ops.add(
+                android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                    .withValue(
+                        ContactsContract.Data.MIMETYPE,
+                        ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
+                    )
+                    .withValue(
+                        ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME,
+                        entry.displayName.ifBlank { "Unnamed Contact" }
+                    )
+                    .build()
+            )
+
+            entry.phoneNumbers.forEach { phone ->
+                val num = phone.number.trim()
+                if (num.isNotEmpty()) {
+                    val androidType = when (phone.typeLabel.lowercase()) {
+                        "mobile", "cell" -> ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                        "home" -> ContactsContract.CommonDataKinds.Phone.TYPE_HOME
+                        "work", "office" -> ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+                        "main" -> ContactsContract.CommonDataKinds.Phone.TYPE_MAIN
+                        else -> ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
+                    }
+                    val op = android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, androidType)
+                    if (phone.isDefault) {
+                        op.withValue(ContactsContract.Data.IS_PRIMARY, 1)
+                        op.withValue(ContactsContract.Data.IS_SUPER_PRIMARY, 1)
+                    }
+                    ops.add(op.build())
+                }
+            }
+
+            if (!entry.email.isNullOrBlank()) {
+                ops.add(
+                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, entry.email.trim())
+                        .withValue(
+                            ContactsContract.CommonDataKinds.Email.TYPE,
+                            ContactsContract.CommonDataKinds.Email.TYPE_OTHER
+                        )
+                        .build()
+                )
+            }
+
+            if (!entry.organization.isNullOrBlank()) {
+                ops.add(
+                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, entry.organization.trim())
+                        .build()
+                )
+            }
+
+            if (!entry.note.isNullOrBlank()) {
+                ops.add(
+                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(
+                            ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE
+                        )
+                        .withValue(ContactsContract.CommonDataKinds.Note.NOTE, entry.note.trim())
+                        .build()
+                )
+            }
+
+            val ok = runCatching {
+                context.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+                true
+            }.getOrDefault(false)
+            if (ok) importedCount++
+        }
+        importedCount
+    }
 
     private fun normalizeDigits(number: String): String =
         number.filter { it.isDigit() || it == '+' }

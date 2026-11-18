@@ -120,6 +120,32 @@ object SipMessageCodec {
         }
     }
 
+    fun extractSipUri(headerValue: String): String {
+        val trimmed = headerValue.trim()
+        val insideBrackets = if (trimmed.contains('<') && trimmed.contains('>')) {
+            trimmed.substringAfter('<').substringBefore('>').trim()
+        } else {
+            trimmed.substringBefore(';').substringBefore(' ').trim()
+        }
+        return insideBrackets
+    }
+
+    fun extractContactExpiresSec(msg: SipRawMessage): Int? {
+        val contact = msg.firstHeader("Contact").orEmpty()
+        val contactExp = Regex("""expires\s*=\s*(\d+)""", RegexOption.IGNORE_CASE)
+            .find(contact)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (contactExp != null && contactExp > 0) return contactExp
+        return msg.firstHeader("Expires")?.trim()?.toIntOrNull()?.takeIf { it > 0 }
+    }
+
+    fun buildRequestUri(targetUri: String, transport: SipTransport): String {
+        val clean = targetUri.trim()
+        if (transport == SipTransport.UDP || clean.contains(";transport=", ignoreCase = true)) {
+            return clean
+        }
+        return "$clean;transport=${transport.label.lowercase()}"
+    }
+
     fun buildInviteRequest(
         targetUri: String,
         domain: String,
@@ -135,17 +161,21 @@ object SipMessageCodec {
         sdpBody: String,
         authHeader: Pair<String, String>? = null,
         contactIp: String = localIp,
-        contactPort: Int = localSipPort
+        contactPort: Int = localSipPort,
+        routeSet: List<String> = emptyList()
     ): String {
         val transportUpper = transport.label
+        val requestUri = buildRequestUri(targetUri, transport)
+        val cleanToUri = targetUri.substringBefore(';').trim()
         val bodyBytes = sdpBody.toByteArray(Charsets.UTF_8)
         val safeName = displayName.replace("\"", "").ifBlank { username }
         return buildString {
-            append("INVITE $targetUri SIP/2.0$CRLF")
+            append("INVITE $requestUri SIP/2.0$CRLF")
             append("Via: SIP/2.0/$transportUpper $localIp:$localSipPort;rport;branch=$branch$CRLF")
             append("Max-Forwards: 70$CRLF")
+            routeSet.forEach { route -> append("Route: $route$CRLF") }
             append("From: \"$safeName\" <sip:$username@$domain>;tag=$fromTag$CRLF")
-            append("To: <$targetUri>$CRLF")
+            append("To: <$cleanToUri>$CRLF")
             append("Call-ID: $callId$CRLF")
             append("CSeq: $cseq INVITE$CRLF")
             append("Contact: <sip:$username@$contactIp:$contactPort;transport=${transportUpper.lowercase()}>$CRLF")
@@ -170,13 +200,16 @@ object SipMessageCodec {
         localSipPort: Int,
         transport: SipTransport,
         callId: String,
-        cseq: Int
+        cseq: Int,
+        branch: String = newBranch(),
+        routeSet: List<String> = emptyList()
     ): String {
-        val branch = newBranch()
+        val requestUri = buildRequestUri(targetUri, transport)
         return buildString {
-            append("ACK $targetUri SIP/2.0$CRLF")
+            append("ACK $requestUri SIP/2.0$CRLF")
             append("Via: SIP/2.0/${transport.label} $localIp:$localSipPort;rport;branch=$branch$CRLF")
             append("Max-Forwards: 70$CRLF")
+            routeSet.forEach { route -> append("Route: $route$CRLF") }
             append("From: $fromHeader$CRLF")
             append("To: $toHeader$CRLF")
             append("Call-ID: $callId$CRLF")
@@ -198,14 +231,17 @@ object SipMessageCodec {
         callId: String,
         cseq: Int,
         contentType: String? = null,
-        body: String = ""
+        body: String = "",
+        branch: String = newBranch(),
+        routeSet: List<String> = emptyList()
     ): String {
-        val branch = newBranch()
+        val requestUri = buildRequestUri(targetUri, transport)
         val bodyBytes = body.toByteArray(Charsets.UTF_8)
         return buildString {
-            append("$method $targetUri SIP/2.0$CRLF")
+            append("$method $requestUri SIP/2.0$CRLF")
             append("Via: SIP/2.0/${transport.label} $localIp:$localSipPort;rport;branch=$branch$CRLF")
             append("Max-Forwards: 70$CRLF")
+            routeSet.forEach { route -> append("Route: $route$CRLF") }
             append("From: $fromHeader$CRLF")
             append("To: $toHeader$CRLF")
             append("Call-ID: $callId$CRLF")
@@ -234,15 +270,24 @@ object SipMessageCodec {
     ): String {
         val bodyBytes = body.toByteArray(Charsets.UTF_8)
         val rawTo = request.firstHeader("To").orEmpty()
-        val toWithTag = if (rawTo.contains("tag=", ignoreCase = true)) rawTo else "$rawTo;tag=$toTag"
+        val toWithTag = when {
+            statusCode == 100 -> rawTo
+            rawTo.contains("tag=", ignoreCase = true) -> rawTo
+            toTag.isBlank() -> rawTo
+            else -> "$rawTo;tag=$toTag"
+        }
         return buildString {
             append("SIP/2.0 $statusCode $reasonPhrase$CRLF")
             request.headerValues("Via").forEach { via -> append("Via: $via$CRLF") }
+            request.headerValues("Record-Route").forEach { rr -> append("Record-Route: $rr$CRLF") }
             request.firstHeader("From")?.let { append("From: $it$CRLF") }
             append("To: $toWithTag$CRLF")
             request.firstHeader("Call-ID")?.let { append("Call-ID: $it$CRLF") }
             request.firstHeader("CSeq")?.let { append("CSeq: $it$CRLF") }
-            append("Contact: <sip:$username@$localIp:$localPort;transport=${transport.label.lowercase()}>$CRLF")
+            if (statusCode != 100) {
+                append("Contact: <sip:$username@$localIp:$localPort;transport=${transport.label.lowercase()}>$CRLF")
+            }
+            append("Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO$CRLF")
             append("User-Agent: $USER_AGENT$CRLF")
             if (contentType != null && bodyBytes.isNotEmpty()) {
                 append("Content-Type: $contentType$CRLF")
@@ -384,7 +429,8 @@ object SipMessageCodec {
         direction: String = "sendrecv"
     ): String {
         val sessionId = System.currentTimeMillis() / 1000L
-        val codecs = if (preferWideband) "9 0 8 101" else "0 8 9 101"
+        // Advertise PCMU (0) and PCMA (8) supported natively by RtpAudioEngine / G711Codec
+        val codecs = if (preferWideband) "0 8 101" else "8 0 101"
         return buildString {
             append("v=0$CRLF")
             append("o=OmniCall $sessionId $sessionId IN IP4 $localIp$CRLF")
@@ -392,7 +438,6 @@ object SipMessageCodec {
             append("c=IN IP4 $localIp$CRLF")
             append("t=0 0$CRLF")
             append("m=audio $localRtpPort RTP/AVP $codecs$CRLF")
-            append("a=rtpmap:9 G722/8000$CRLF")
             append("a=rtpmap:0 PCMU/8000$CRLF")
             append("a=rtpmap:8 PCMA/8000$CRLF")
             append("a=rtpmap:101 telephone-event/8000$CRLF")
@@ -440,15 +485,16 @@ object SipMessageCodec {
         val port = mediaPort ?: return null
         val dtmfPt = rtpmap.entries.firstOrNull { it.value.first == "TELEPHONE-EVENT" }?.key ?: 101
 
-        // Pick highest priority negotiated audio codec (prefer G.722 wideband if offered)
-        val chosenPt = payloadTypes.firstOrNull { it == 9 || it == 0 || it == 8 }
+        // Prefer G.711 PCMU (0) / PCMA (8) so RtpAudioEngine encodes & decodes cleanly
+        val chosenPt = payloadTypes.firstOrNull { it == 0 || it == 8 }
+            ?: payloadTypes.firstOrNull { it == 9 }
             ?: payloadTypes.firstOrNull { it != dtmfPt }
             ?: 0
 
         val (codecName, sampleRate) = when (chosenPt) {
-            9 -> "G722" to 16000
             0 -> "PCMU" to 8000
             8 -> "PCMA" to 8000
+            9 -> "G722" to 16000
             else -> rtpmap[chosenPt] ?: ("PCMU" to 8000)
         }
 
