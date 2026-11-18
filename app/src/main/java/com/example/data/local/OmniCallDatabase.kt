@@ -11,15 +11,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     entities = [
         SipAccountEntity::class,
         CallLogEntity::class,
-        RecordingEntity::class
+        RecordingEntity::class,
+        BlockedNumberEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class OmniCallDatabase : RoomDatabase() {
     abstract fun sipAccountDao(): SipAccountDao
     abstract fun callLogDao(): CallLogDao
     abstract fun recordingDao(): RecordingDao
+    abstract fun blocklistDao(): BlocklistDao
 
     companion object {
         @Volatile
@@ -36,6 +38,17 @@ abstract class OmniCallDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `blocked_numbers` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `rawNumber` TEXT NOT NULL, `normalizedKey` TEXT NOT NULL, `displayName` TEXT NOT NULL, `createdAtMs` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_blocked_numbers_normalizedKey` ON `blocked_numbers` (`normalizedKey`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): OmniCallDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -43,7 +56,7 @@ abstract class OmniCallDatabase : RoomDatabase() {
                     OmniCallDatabase::class.java,
                     "omnicall_local.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }

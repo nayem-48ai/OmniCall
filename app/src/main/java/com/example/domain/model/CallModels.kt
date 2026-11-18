@@ -166,6 +166,32 @@ enum class RecordingType(
     )
 }
 
+enum class RecordingEngine(val label: String, val shortLabel: String, val description: String) {
+    AUTO(
+        label = "Auto (Smart Fallback)",
+        shortLabel = "Auto",
+        description = "Verifies live signal across AudioRecord sources and auto-switches to MediaRecorder (MIC) if silenced"
+    ),
+    AUDIO_RECORD(
+        label = "AudioRecord (HD WAV/AAC)",
+        shortLabel = "AudioRecord",
+        description = "Direct PCM capture with hardware voice gain"
+    ),
+    MEDIA_RECORDER_MIC(
+        label = "MediaRecorder (MIC Mode)",
+        shortLabel = "MediaRecorder MIC",
+        description = "Standard Android MediaRecorder using AudioSource.MIC for maximum device compatibility"
+    )
+}
+
+data class BlockedNumberItem(
+    val id: Long = 0L,
+    val rawNumber: String,
+    val normalizedKey: String,
+    val displayName: String,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
 enum class CallLifecycleState {
     IDLE,
     DIALING,

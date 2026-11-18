@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import com.example.audio.DualStreamCallRecorder
 import com.example.audio.RtpAudioEngine
 import com.example.data.preferences.AppPreferencesRepository
+import com.example.data.repository.BlocklistRepository
 import com.example.data.repository.CallLogRepository
 import com.example.data.repository.ContactsRepository
 import com.example.domain.ai.CallEventBus
@@ -63,6 +64,7 @@ class ActiveCallCoordinator(
     private val telecomCallManager: TelecomCallManager,
     private val simDetector: SimSubscriptionDetector,
     private val contactsRepository: ContactsRepository,
+    private val blocklistRepository: BlocklistRepository,
     private val sipClientEngine: SipClientEngine,
     private val rtpAudioEngine: RtpAudioEngine,
     private val callRecorder: DualStreamCallRecorder,
@@ -91,6 +93,7 @@ class ActiveCallCoordinator(
     private var activeSipAccount: SipAccountModel? = null
     private var activeCallDirection: CallDirection = CallDirection.OUTGOING
     private var currentCallLogged: Boolean = false
+    private var autoRecordingTriggeredForCallId: String? = null
 
     private val dtmfToneGenerator: ToneGenerator? by lazy {
         runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 70) }.getOrNull()
@@ -270,6 +273,11 @@ class ActiveCallCoordinator(
     }
 
     private suspend fun handleIncomingSipInvite(event: SipSignalingEvent.IncomingInvite) {
+        if (blocklistRepository.isBlocked(event.fromUri)) {
+            sipClientEngine.terminateCall(event.callId)
+            return
+        }
+
         val interceptor = callInterceptor
         if (interceptor != null) {
             when (interceptor.evaluateIncomingCall(event.callId, event.fromUri, CallSourceType.SIP)) {
@@ -364,15 +372,14 @@ class ActiveCallCoordinator(
         }
         voipConnectionRef?.get()?.setActive()
 
-        VoipCallForegroundService.startOrUpdate(
-            context = context,
-            title = current.displayName.ifBlank { current.remoteHandle },
-            subtitle = current.routeBadge,
-            isRecording = current.isRecording
-        )
-
         scope.launch {
             val prefs = prefsRepository.settingsFlow.first()
+            VoipCallForegroundService.startAndAwaitReady(
+                context = context,
+                title = current.displayName.ifBlank { current.remoteHandle },
+                subtitle = current.routeBadge,
+                isRecording = prefs.autoCallRecording || current.isRecording
+            )
             rtpAudioEngine.startMediaSession(
                 localRtpPort = localRtpPort,
                 remoteSdp = remoteSdp,
@@ -381,6 +388,9 @@ class ActiveCallCoordinator(
                 enableAgc = prefs.enableHardwareAgc,
                 transportLabel = current.routeBadge
             )
+            if (prefs.autoCallRecording) {
+                triggerAutoRecordingIfNeeded()
+            }
         }
 
         startTimersAndTelemetry()
@@ -517,7 +527,7 @@ class ActiveCallCoordinator(
     }
 
     /**
-     * Manual in-call Record toggle button (no external announcement or consent dialog).
+     * Manual or automatic in-call recording start/stop without announcement or consent dialog.
      */
     fun toggleManualRecording() {
         val current = _activeCall.value
@@ -525,55 +535,7 @@ class ActiveCallCoordinator(
 
         scope.launch {
             if (!current.isRecording) {
-                val hasMic = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.RECORD_AUDIO
-                ) == PackageManager.PERMISSION_GRANTED
-                if (!hasMic) {
-                    _activeCall.update {
-                        it.copy(statusMessage = "Grant Microphone permission to record calls")
-                    }
-                    return@launch
-                }
-
-                // Ensure microphone foreground service is active on Android 14+ before opening AudioRecord
-                VoipCallForegroundService.startOrUpdate(
-                    context = context,
-                    title = current.displayName.ifBlank { current.remoteHandle },
-                    subtitle = current.routeBadge,
-                    isRecording = true
-                )
-                delay(80L)
-
-                val prefs = prefsRepository.settingsFlow.first()
-                val started = callRecorder.startRecording(
-                    callId = current.callId,
-                    remoteHandle = current.remoteHandle,
-                    displayName = current.displayName,
-                    sourceType = current.sourceType,
-                    sourceLabel = current.routeBadge.ifBlank { current.sourceType.label },
-                    format = prefs.recordingFormat,
-                    recordingType = prefs.recordingType
-                )
-                if (started) {
-                    _activeCall.update {
-                        it.copy(
-                            isRecording = true,
-                            recordingDurationSec = 0,
-                            statusMessage = "Recording (${prefs.recordingType.shortLabel})..."
-                        )
-                    }
-                } else {
-                    VoipCallForegroundService.startOrUpdate(
-                        context = context,
-                        title = current.displayName.ifBlank { current.remoteHandle },
-                        subtitle = current.routeBadge,
-                        isRecording = false
-                    )
-                    _activeCall.update {
-                        it.copy(statusMessage = "Audio capture unavailable on this line")
-                    }
-                }
+                startRecordingInternal()
             } else {
                 val saved = callRecorder.stopRecording()
                 _activeCall.update {
@@ -588,6 +550,76 @@ class ActiveCallCoordinator(
                     subtitle = current.routeBadge,
                     isRecording = false
                 )
+            }
+        }
+    }
+
+    private fun triggerAutoRecordingIfNeeded() {
+        val current = _activeCall.value
+        if (current.lifecycle != CallLifecycleState.ACTIVE) return
+        if (current.callId.isBlank() || autoRecordingTriggeredForCallId == current.callId) return
+        if (current.isRecording || callRecorder.isRecording) return
+        autoRecordingTriggeredForCallId = current.callId
+        scope.launch {
+            delay(180L)
+            if (_activeCall.value.lifecycle == CallLifecycleState.ACTIVE && !_activeCall.value.isRecording) {
+                startRecordingInternal()
+            }
+        }
+    }
+
+    private suspend fun startRecordingInternal() {
+        val current = _activeCall.value
+        if (current.lifecycle == CallLifecycleState.IDLE || current.isRecording) return
+
+        val hasMic = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasMic) {
+            _activeCall.update {
+                it.copy(statusMessage = "Grant Microphone permission to record calls")
+            }
+            return
+        }
+
+        // Synchronously await Foreground Service with phoneCall|microphone before opening AudioRecord/MediaRecorder
+        VoipCallForegroundService.startAndAwaitReady(
+            context = context,
+            title = current.displayName.ifBlank { current.remoteHandle },
+            subtitle = current.routeBadge,
+            isRecording = true
+        )
+        delay(60L)
+
+        val prefs = prefsRepository.settingsFlow.first()
+        val started = callRecorder.startRecording(
+            callId = current.callId,
+            remoteHandle = current.remoteHandle,
+            displayName = current.displayName,
+            sourceType = current.sourceType,
+            sourceLabel = current.routeBadge.ifBlank { current.sourceType.label },
+            format = prefs.recordingFormat,
+            recordingType = prefs.recordingType,
+            recordingEngine = prefs.recordingEngine
+        )
+        if (started) {
+            _activeCall.update {
+                it.copy(
+                    isRecording = true,
+                    recordingDurationSec = 0,
+                    statusMessage = "Recording (${prefs.recordingType.shortLabel})..."
+                )
+            }
+        } else {
+            VoipCallForegroundService.startOrUpdate(
+                context = context,
+                title = current.displayName.ifBlank { current.remoteHandle },
+                subtitle = current.routeBadge,
+                isRecording = false
+            )
+            _activeCall.update {
+                it.copy(statusMessage = "Audio capture unavailable on this line")
             }
         }
     }
@@ -660,8 +692,22 @@ class ActiveCallCoordinator(
             notificationManager.cancelIncomingNotification()
         }
 
-        if (lifecycle == CallLifecycleState.ACTIVE && timerJob == null) {
-            startTimersAndTelemetry()
+        if (lifecycle == CallLifecycleState.ACTIVE) {
+            if (timerJob == null) {
+                startTimersAndTelemetry()
+            }
+            scope.launch {
+                val prefs = prefsRepository.settingsFlow.first()
+                VoipCallForegroundService.startOrUpdate(
+                    context = context,
+                    title = _activeCall.value.displayName.ifBlank { remoteHandle },
+                    subtitle = routeBadge,
+                    isRecording = prefs.autoCallRecording || _activeCall.value.isRecording
+                )
+                if (prefs.autoCallRecording) {
+                    triggerAutoRecordingIfNeeded()
+                }
+            }
         }
     }
 
@@ -753,6 +799,7 @@ class ActiveCallCoordinator(
         delay(200L)
         _activeCall.value = ActiveCallState()
         _elapsedSeconds.value = 0
+        autoRecordingTriggeredForCallId = null
     }
 
     companion object {

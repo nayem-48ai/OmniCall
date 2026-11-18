@@ -11,6 +11,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaRecorder
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.example.data.repository.RecordingItem
 import com.example.data.repository.RecordingRepository
@@ -18,6 +19,7 @@ import com.example.domain.ai.AudioStreamTap
 import com.example.domain.ai.CallEventBus
 import com.example.domain.ai.OmniCallEvent
 import com.example.domain.model.CallSourceType
+import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingFormat
 import com.example.domain.model.RecordingType
 import kotlinx.coroutines.CoroutineScope
@@ -37,23 +39,22 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
  * Local Call Recorder (Scoped Storage Compliant)
  * ----------------------------------------------
- * Activated manually via the in-call Record button.
+ * Supports manual & Auto Call Recording across both Cellular SIM and SIP VoIP calls.
  *
- * Reliability architecture:
- * - Captures live 16-bit PCM directly into a WAV stream on [Dispatchers.IO], preventing frame loss
- *   or empty files on strict OEM MediaCodec implementations.
- * - Supports 3 [RecordingType] modes:
- *   1. [RecordingType.INTERNAL_AND_EXTERNAL]: SIP mixes uplink+downlink; SIM probes VOICE_CALL -> VOICE_COMMUNICATION -> VOICE_RECOGNITION -> MIC.
- *   2. [RecordingType.ONLY_INTERNAL]: SIP captures downlink only; SIM prioritizes VOICE_DOWNLINK -> VOICE_CALL -> fallbacks.
- *   3. [RecordingType.ONLY_EXTERNAL]: SIP captures uplink only; SIM prioritizes VOICE_UPLINK -> MIC -> VOICE_RECOGNITION.
- * - On stop, if [RecordingFormat.AAC_M4A] is chosen, encodes the captured PCM to `.m4a` via
- *   MediaCodec+MediaMuxer and verifies output integrity, seamlessly keeping the `.wav` if an OEM
- *   hardware AAC encoder declines configuration.
+ * Anti-Silence & OEM Compatibility Architecture:
+ * - On Android 10–14+, privileged AudioSources (VOICE_CALL, VOICE_DOWNLINK, VOICE_UPLINK) often
+ *   initialize cleanly but emit 100% digital zeros from AudioFlinger. Every AudioRecord source is
+ *   actively probed (~140ms) for genuine non-zero PCM signal before acceptance.
+ * - Supports full [MediaRecorder] (`AudioSource.MIC` / `VOICE_RECOGNITION` / `VOICE_COMMUNICATION`)
+ *   encoding to `.m4a` both directly ([RecordingEngine.MEDIA_RECORDER_MIC]) and as an automatic
+ *   runtime fallback ([RecordingEngine.AUTO]) whenever AudioRecord sources are silenced by an OEM HAL.
+ * - Supports all 3 [RecordingType] modes (Both Sides, Only Internal Voice, Only External Voice).
  */
 class DualStreamCallRecorder(
     private val context: Context,
@@ -67,6 +68,7 @@ class DualStreamCallRecorder(
     private var uplinkCollectorJob: Job? = null
     private var downlinkCollectorJob: Job? = null
     private var simAudioRecord: AudioRecord? = null
+    private var simMediaRecorder: MediaRecorder? = null
 
     private val uplinkQueue = ConcurrentLinkedQueue<ShortArray>()
     private val downlinkQueue = ConcurrentLinkedQueue<ShortArray>()
@@ -74,6 +76,9 @@ class DualStreamCallRecorder(
     @Volatile
     var isRecording: Boolean = false
         private set
+
+    @Volatile
+    private var usingMediaRecorderFallback: Boolean = false
 
     private var currentCallId: String = ""
     private var currentRemoteHandle: String = ""
@@ -84,6 +89,7 @@ class DualStreamCallRecorder(
     private var currentSampleRate: Int = 16000
     private var currentWavFile: File? = null
     private var currentTargetM4aFile: File? = null
+    private var currentMediaRecorderFile: File? = null
     private var startedAtMs: Long = 0L
 
     @SuppressLint("MissingPermission")
@@ -94,7 +100,8 @@ class DualStreamCallRecorder(
         sourceType: CallSourceType,
         sourceLabel: String,
         format: RecordingFormat,
-        recordingType: RecordingType = RecordingType.INTERNAL_AND_EXTERNAL
+        recordingType: RecordingType = RecordingType.INTERNAL_AND_EXTERNAL,
+        recordingEngine: RecordingEngine = RecordingEngine.AUTO
     ): Boolean = withContext(Dispatchers.IO) {
         if (isRecording) return@withContext true
 
@@ -104,27 +111,70 @@ class DualStreamCallRecorder(
         ) == PackageManager.PERMISSION_GRANTED
         if (!hasMic) return@withContext false
 
-        val candidateSources = buildAudioSourceCandidates(recordingType)
-        var detectedSampleRate = 16000
-        var activeSourceIndex = 0
-
-        if (sourceType != CallSourceType.SIP) {
-            val opened = openBestSimAudioRecord(candidateSources, startFromIndex = 0)
-                ?: return@withContext false
-            simAudioRecord = opened.recorder
-            detectedSampleRate = opened.sampleRate
-            activeSourceIndex = opened.sourceIndex
-        }
-
         val dir = File(context.filesDir, "recordings").apply { if (!exists()) mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val safeParty = remoteHandle.replace(Regex("[^A-Za-z0-9+]"), "_").take(20).ifBlank { "call" }
 
         val wavFile = File(dir, "OmniCall_${safeParty}_$stamp.wav")
-        val m4aFile = if (format == RecordingFormat.AAC_M4A) {
-            File(dir, "OmniCall_${safeParty}_$stamp.m4a")
-        } else {
-            null
+        val m4aFile = File(dir, "OmniCall_${safeParty}_$stamp.m4a")
+        val candidateSources = buildAudioSourceCandidates(recordingType)
+
+        usingMediaRecorderFallback = false
+        currentMediaRecorderFile = null
+
+        var detectedSampleRate = 16000
+        var activeSourceIndex = 0
+        var activeAudioRecordStarted = false
+
+        if (sourceType != CallSourceType.SIP) {
+            if (recordingEngine == RecordingEngine.MEDIA_RECORDER_MIC) {
+                val startedMr = startSimMediaRecorder(m4aFile, recordingType)
+                if (!startedMr) return@withContext false
+                usingMediaRecorderFallback = true
+                currentMediaRecorderFile = m4aFile
+                detectedSampleRate = 44100
+            } else {
+                val opened = openBestSimAudioRecord(
+                    sources = candidateSources,
+                    startFromIndex = 0,
+                    requireNonZeroSignal = true
+                )
+                if (opened != null) {
+                    simAudioRecord = opened.recorder
+                    detectedSampleRate = opened.sampleRate
+                    activeSourceIndex = opened.sourceIndex
+                    activeAudioRecordStarted = true
+                } else if (recordingEngine == RecordingEngine.AUTO) {
+                    // Fallback directly to MediaRecorder(AudioSource.MIC)
+                    val startedMr = startSimMediaRecorder(m4aFile, recordingType)
+                    if (!startedMr) {
+                        // Last-resort: accept an initialized AudioRecord even without probe signal
+                        val rawOpened = openBestSimAudioRecord(
+                            sources = candidateSources,
+                            startFromIndex = 0,
+                            requireNonZeroSignal = false
+                        ) ?: return@withContext false
+                        simAudioRecord = rawOpened.recorder
+                        detectedSampleRate = rawOpened.sampleRate
+                        activeSourceIndex = rawOpened.sourceIndex
+                        activeAudioRecordStarted = true
+                    } else {
+                        usingMediaRecorderFallback = true
+                        currentMediaRecorderFile = m4aFile
+                        detectedSampleRate = 44100
+                    }
+                } else {
+                    val rawOpened = openBestSimAudioRecord(
+                        sources = candidateSources,
+                        startFromIndex = 0,
+                        requireNonZeroSignal = false
+                    ) ?: return@withContext false
+                    simAudioRecord = rawOpened.recorder
+                    detectedSampleRate = rawOpened.sampleRate
+                    activeSourceIndex = rawOpened.sourceIndex
+                    activeAudioRecordStarted = true
+                }
+            }
         }
 
         currentCallId = callId
@@ -135,7 +185,7 @@ class DualStreamCallRecorder(
         currentRecordingType = recordingType
         currentSampleRate = detectedSampleRate
         currentWavFile = wavFile
-        currentTargetM4aFile = m4aFile
+        currentTargetM4aFile = if (format == RecordingFormat.AAC_M4A) m4aFile else null
         startedAtMs = System.currentTimeMillis()
         isRecording = true
         uplinkQueue.clear()
@@ -148,7 +198,7 @@ class DualStreamCallRecorder(
                 uplinkCollectorJob = scope.launch {
                     audioStreamTap.uplinkFrames.collect { frame ->
                         if (isRecording) {
-                            if (uplinkQueue.size > 64) uplinkQueue.poll()
+                            if (uplinkQueue.size > 96) uplinkQueue.poll()
                             uplinkQueue.offer(frame.pcm16)
                         }
                     }
@@ -160,23 +210,37 @@ class DualStreamCallRecorder(
                 downlinkCollectorJob = scope.launch {
                     audioStreamTap.downlinkFrames.collect { frame ->
                         if (isRecording) {
-                            if (downlinkQueue.size > 64) downlinkQueue.poll()
+                            if (downlinkQueue.size > 96) downlinkQueue.poll()
                             downlinkQueue.offer(frame.pcm16)
                         }
                     }
                 }
             }
-        }
-
-        recordingJob = scope.launch {
-            writeLiveWavStream(
-                outFile = wavFile,
-                sourceType = sourceType,
-                recordingType = recordingType,
-                initialSampleRate = detectedSampleRate,
-                candidateSources = candidateSources,
-                initialSourceIndex = activeSourceIndex
-            )
+            recordingJob = scope.launch {
+                writeLiveWavStream(
+                    outFile = wavFile,
+                    sourceType = sourceType,
+                    recordingType = recordingType,
+                    recordingEngine = recordingEngine,
+                    initialSampleRate = detectedSampleRate,
+                    candidateSources = candidateSources,
+                    initialSourceIndex = activeSourceIndex,
+                    fallbackM4aFile = m4aFile
+                )
+            }
+        } else if (activeAudioRecordStarted) {
+            recordingJob = scope.launch {
+                writeLiveWavStream(
+                    outFile = wavFile,
+                    sourceType = sourceType,
+                    recordingType = recordingType,
+                    recordingEngine = recordingEngine,
+                    initialSampleRate = detectedSampleRate,
+                    candidateSources = candidateSources,
+                    initialSourceIndex = activeSourceIndex,
+                    fallbackM4aFile = m4aFile
+                )
+            }
         }
         true
     }
@@ -185,24 +249,50 @@ class DualStreamCallRecorder(
         return when (recordingType) {
             RecordingType.INTERNAL_AND_EXTERNAL -> listOf(
                 MediaRecorder.AudioSource.VOICE_CALL,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.CAMCORDER,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.DEFAULT
             )
             RecordingType.ONLY_INTERNAL -> listOf(
                 MediaRecorder.AudioSource.VOICE_DOWNLINK,
                 MediaRecorder.AudioSource.VOICE_CALL,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.MIC
+                MediaRecorder.AudioSource.CAMCORDER,
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
             )
             RecordingType.ONLY_EXTERNAL -> listOf(
                 MediaRecorder.AudioSource.VOICE_UPLINK,
                 MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.CAMCORDER,
                 MediaRecorder.AudioSource.DEFAULT
+            )
+        }
+    }
+
+    private fun buildMediaRecorderSources(recordingType: RecordingType): List<Int> {
+        return when (recordingType) {
+            RecordingType.INTERNAL_AND_EXTERNAL -> listOf(
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.CAMCORDER,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_CALL
+            )
+            RecordingType.ONLY_INTERNAL -> listOf(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.CAMCORDER,
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_DOWNLINK
+            )
+            RecordingType.ONLY_EXTERNAL -> listOf(
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION
             )
         }
     }
@@ -210,15 +300,18 @@ class DualStreamCallRecorder(
     private data class OpenedSimRecorder(
         val recorder: AudioRecord,
         val sampleRate: Int,
-        val sourceIndex: Int
+        val sourceIndex: Int,
+        val hasSignal: Boolean
     )
 
     @SuppressLint("MissingPermission")
     private fun openBestSimAudioRecord(
         sources: List<Int>,
-        startFromIndex: Int
+        startFromIndex: Int,
+        requireNonZeroSignal: Boolean
     ): OpenedSimRecorder? {
-        val rates = listOf(16000, 44100, 48000, 8000)
+        val rates = listOf(44100, 16000, 48000, 8000)
+        var firstInitializedSilentBackup: OpenedSimRecorder? = null
 
         for (srcIdx in startFromIndex until sources.size) {
             val source = sources[srcIdx]
@@ -229,7 +322,7 @@ class DualStreamCallRecorder(
                     AudioFormat.ENCODING_PCM_16BIT
                 )
                 if (minBuf <= 0) continue
-                val bufBytes = minBuf.coerceAtLeast((rate / 50) * 6)
+                val bufBytes = minBuf.coerceAtLeast((rate / 50) * 8)
                 val rec = runCatching {
                     AudioRecord(
                         source,
@@ -245,14 +338,38 @@ class DualStreamCallRecorder(
                         rec.startRecording()
                         rec.recordingState == AudioRecord.RECORDSTATE_RECORDING
                     }.getOrDefault(false)
+
                     if (started) {
-                        // Verify the audio HAL allows reading from this AudioSource
-                        val probeBuf = ShortArray((rate / 50).coerceAtLeast(160))
-                        val probeRead = runCatching {
-                            rec.read(probeBuf, 0, probeBuf.size, AudioRecord.READ_BLOCKING)
-                        }.getOrDefault(-1)
-                        if (probeRead >= 0) {
-                            return OpenedSimRecorder(rec, rate, srcIdx)
+                        // Probe ~140ms across 7 chunks to verify HAL is NOT filling 0x0000 privacy silence
+                        val chunkLen = (rate / 50).coerceAtLeast(160)
+                        val probeBuf = ShortArray(chunkLen)
+                        var nonZeroSamples = 0
+                        var totalRead = 0
+                        for (attempt in 0 until 7) {
+                            val r = runCatching {
+                                rec.read(probeBuf, 0, probeBuf.size, AudioRecord.READ_BLOCKING)
+                            }.getOrDefault(-1)
+                            if (r > 0) {
+                                totalRead += r
+                                for (i in 0 until r) {
+                                    if (probeBuf[i].toInt() != 0) {
+                                        nonZeroSamples++
+                                    }
+                                }
+                            }
+                            if (nonZeroSamples >= 6) break
+                        }
+
+                        if (nonZeroSamples >= 6) {
+                            firstInitializedSilentBackup?.let { backup ->
+                                runCatching { backup.recorder.stop(); backup.recorder.release() }
+                            }
+                            return OpenedSimRecorder(rec, rate, srcIdx, hasSignal = true)
+                        }
+
+                        if (!requireNonZeroSignal && totalRead >= 0 && firstInitializedSilentBackup == null) {
+                            firstInitializedSilentBackup = OpenedSimRecorder(rec, rate, srcIdx, hasSignal = false)
+                            break // move to next AudioSource rather than releasing yet
                         }
                     }
                 }
@@ -260,7 +377,39 @@ class DualStreamCallRecorder(
                 runCatching { rec.release() }
             }
         }
-        return null
+        return if (requireNonZeroSignal) null else firstInitializedSilentBackup
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startSimMediaRecorder(outFile: File, recordingType: RecordingType): Boolean {
+        val sources = buildMediaRecorderSources(recordingType)
+        for (src in sources) {
+            val mr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(context)
+            } else {
+                MediaRecorder()
+            }
+            val started = runCatching {
+                mr.setAudioSource(src)
+                mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                mr.setAudioSamplingRate(44100)
+                mr.setAudioEncodingBitRate(96000)
+                mr.setAudioChannels(1)
+                mr.setOutputFile(outFile.absolutePath)
+                mr.prepare()
+                mr.start()
+                true
+            }.getOrDefault(false)
+
+            if (started) {
+                simMediaRecorder = mr
+                return true
+            }
+            runCatching { mr.reset() }
+            runCatching { mr.release() }
+        }
+        return false
     }
 
     suspend fun stopRecording(): RecordingItem? = withContext(Dispatchers.IO) {
@@ -280,6 +429,39 @@ class DualStreamCallRecorder(
 
         recordingJob?.join()
         recordingJob = null
+
+        val mrFile = currentMediaRecorderFile
+        if (simMediaRecorder != null) {
+            runCatching { simMediaRecorder?.stop() }
+            runCatching { simMediaRecorder?.reset() }
+            runCatching { simMediaRecorder?.release() }
+            simMediaRecorder = null
+        }
+
+        val durationMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(1000L)
+
+        // If MediaRecorder captured the recording (direct or via runtime fallback)
+        if (usingMediaRecorderFallback && mrFile != null && mrFile.exists() && mrFile.length() > 256L) {
+            currentWavFile?.let { if (it.exists()) runCatching { it.delete() } }
+            val item = RecordingItem(
+                id = 0L,
+                fileName = mrFile.name,
+                filePath = mrFile.absolutePath,
+                format = RecordingFormat.AAC_M4A,
+                sampleRateHz = currentSampleRate,
+                durationMs = durationMs,
+                fileSizeBytes = mrFile.length(),
+                remoteHandle = currentRemoteHandle,
+                remoteDisplayName = currentDisplayName,
+                sourceLabel = "$currentSourceLabel • MIC",
+                createdAtMs = startedAtMs
+            )
+            val insertedId = recordingRepository.saveRecording(item)
+            eventBus.publish(
+                OmniCallEvent.RecordingCompleted(currentCallId, mrFile.absolutePath, durationMs)
+            )
+            return@withContext item.copy(id = insertedId)
+        }
 
         val wavFile = currentWavFile ?: return@withContext null
         if (!wavFile.exists() || wavFile.length() <= 44L) {
@@ -302,7 +484,6 @@ class DualStreamCallRecorder(
             }
         }
 
-        val durationMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(1000L)
         val item = RecordingItem(
             id = 0L,
             fileName = finalFile.name,
@@ -327,15 +508,19 @@ class DualStreamCallRecorder(
         outFile: File,
         sourceType: CallSourceType,
         recordingType: RecordingType,
+        recordingEngine: RecordingEngine,
         initialSampleRate: Int,
         candidateSources: List<Int>,
-        initialSourceIndex: Int
+        initialSourceIndex: Int,
+        fallbackM4aFile: File
     ) {
         var sampleRate = initialSampleRate
         var sourceIndex = initialSourceIndex
         var frameSamples = (sampleRate / 50).coerceAtLeast(160) // 20ms frame
         var simBuf = ShortArray(frameSamples)
         var consecutiveSimFailures = 0
+        var consecutiveZeroFrames = 0
+        var anyNonZeroWritten = false
 
         FileOutputStream(outFile).use { fos ->
             fos.write(ByteArray(44))
@@ -347,17 +532,17 @@ class DualStreamCallRecorder(
                 val pcmFrame: ShortArray = if (sourceType == CallSourceType.SIP) {
                     val pulled = pullNextSipFrame(recordingType, frameSamples)
                     if (pulled != null) {
-                        if (isRecording) delay(20)
+                        if (isRecording && uplinkQueue.size < 2 && downlinkQueue.size < 2) delay(15)
                         pulled
                     } else {
                         delay(20)
                         if (!isRecording) break
-                        // Write silence tick so call timeline and output file remain valid
                         ShortArray(frameSamples)
                     }
                 } else {
                     val rec = simAudioRecord
                     if (rec == null) {
+                        if (usingMediaRecorderFallback) break
                         delay(20)
                         if (!isRecording) break
                         ShortArray(frameSamples)
@@ -367,27 +552,76 @@ class DualStreamCallRecorder(
                         }.getOrDefault(-1)
                         if (read > 0) {
                             consecutiveSimFailures = 0
-                            simBuf.copyOf(read)
-                        } else {
-                            consecutiveSimFailures++
-                            if (consecutiveSimFailures >= 15 && sourceIndex + 1 < candidateSources.size) {
-                                // Failover cleanly to next OEM-supported audio source
-                                runCatching {
-                                    rec.stop()
-                                    rec.release()
-                                }
-                                val reopened = openBestSimAudioRecord(candidateSources, sourceIndex + 1)
+                            var maxAmp = 0
+                            for (i in 0 until read) {
+                                val v = abs(simBuf[i].toInt())
+                                if (v > maxAmp) maxAmp = v
+                            }
+                            if (maxAmp == 0) {
+                                consecutiveZeroFrames++
+                            } else {
+                                consecutiveZeroFrames = 0
+                                anyNonZeroWritten = true
+                            }
+
+                            // If current source is returning pure digital silence (>0.7s), switch sources or MediaRecorder(MIC)
+                            if (consecutiveZeroFrames >= 35 && isRecording) {
+                                runCatching { rec.stop(); rec.release() }
+                                simAudioRecord = null
+                                val reopened = if (sourceIndex + 1 < candidateSources.size) {
+                                    openBestSimAudioRecord(
+                                        sources = candidateSources,
+                                        startFromIndex = sourceIndex + 1,
+                                        requireNonZeroSignal = true
+                                    )
+                                } else null
+
                                 if (reopened != null) {
                                     simAudioRecord = reopened.recorder
                                     sourceIndex = reopened.sourceIndex
-                                    // Keep sample rate consistent with WAV header unless 0 bytes written yet
-                                    if (totalAudioBytes == 0L && reopened.sampleRate != sampleRate) {
+                                    if (!anyNonZeroWritten && reopened.sampleRate != sampleRate && totalAudioBytes == 0L) {
                                         sampleRate = reopened.sampleRate
                                         currentSampleRate = sampleRate
                                         frameSamples = (sampleRate / 50).coerceAtLeast(160)
                                         simBuf = ShortArray(frameSamples)
                                     }
+                                    consecutiveZeroFrames = 0
+                                } else if (recordingEngine == RecordingEngine.AUTO && !anyNonZeroWritten) {
+                                    // Escalate to Android MediaRecorder(AudioSource.MIC)
+                                    if (startSimMediaRecorder(fallbackM4aFile, recordingType)) {
+                                        usingMediaRecorderFallback = true
+                                        currentMediaRecorderFile = fallbackM4aFile
+                                        currentSampleRate = 44100
+                                        break
+                                    }
+                                }
+                            }
+
+                            applyAdaptiveVoiceGain(simBuf.copyOf(read), maxAmp)
+                        } else {
+                            consecutiveSimFailures++
+                            if (consecutiveSimFailures >= 12 && isRecording) {
+                                runCatching { rec.stop(); rec.release() }
+                                simAudioRecord = null
+                                val reopened = if (sourceIndex + 1 < candidateSources.size) {
+                                    openBestSimAudioRecord(
+                                        sources = candidateSources,
+                                        startFromIndex = sourceIndex + 1,
+                                        requireNonZeroSignal = true
+                                    )
+                                } else null
+
+                                if (reopened != null) {
+                                    simAudioRecord = reopened.recorder
+                                    sourceIndex = reopened.sourceIndex
                                     consecutiveSimFailures = 0
+                                } else if (recordingEngine == RecordingEngine.AUTO) {
+                                    if (startSimMediaRecorder(fallbackM4aFile, recordingType)) {
+                                        usingMediaRecorderFallback = true
+                                        currentMediaRecorderFile = fallbackM4aFile
+                                        currentSampleRate = 44100
+                                        break
+                                    }
                                 }
                             }
                             delay(20)
@@ -404,6 +638,23 @@ class DualStreamCallRecorder(
             }
             fos.flush()
             patchWavHeader(outFile, totalAudioBytes, sampleRate, 1, 16)
+        }
+    }
+
+    /**
+     * Gentle adaptive gain for SIM microphone / acoustic capture so voices are clearly audible
+     * even when Android attenuates capture gain during MODE_IN_CALL.
+     */
+    private fun applyAdaptiveVoiceGain(samples: ShortArray, maxAmp: Int): ShortArray {
+        if (maxAmp <= 0 || maxAmp > 9500) return samples
+        val gain = when {
+            maxAmp < 800 -> 4.0f
+            maxAmp < 2500 -> 3.0f
+            maxAmp < 6000 -> 2.0f
+            else -> 1.4f
+        }
+        return ShortArray(samples.size) { idx ->
+            (samples[idx] * gain).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
     }
 
@@ -457,11 +708,10 @@ class DualStreamCallRecorder(
             muxer = MediaMuxer(m4aFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
             val bufferInfo = MediaCodec.BufferInfo()
-            val readChunk = ByteArray(2048) // 1024 mono samples
+            val readChunk = ByteArray(2048)
             var ptsUs = 0L
 
             FileInputStream(wavFile).use { fis ->
-                // Skip 44-byte WAV header
                 var toSkip = 44L
                 while (toSkip > 0L) {
                     val skipped = fis.skip(toSkip)
@@ -497,7 +747,6 @@ class DualStreamCallRecorder(
                 }
             }
 
-            // Signal End Of Stream
             var eosQueued = false
             for (attempt in 0 until 20) {
                 val eosIdx = codec.dequeueInputBuffer(15_000)

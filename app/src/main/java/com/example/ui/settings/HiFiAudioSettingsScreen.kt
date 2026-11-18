@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingFormat
 import com.example.domain.model.RecordingType
 import com.example.ui.viewmodel.SipSettingsUiState
@@ -80,6 +81,32 @@ fun HiFiAudioSettingsScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // 0. Auto Call Recording toggle (all incoming & outgoing calls)
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Call Recording Mode",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            HiFiToggleRow(
+                                label = "Auto Call Recording",
+                                description = "Automatically record all incoming & outgoing calls when connected",
+                                checked = uiState.settings.autoCallRecording,
+                                onCheckedChange = { viewModel.setAutoCallRecording(it) },
+                                testTag = "toggle_auto_call_recording"
+                            )
+                        }
+                    }
+                }
+
                 // 1. Recording Type selector (3 options)
                 item {
                     Surface(
@@ -96,7 +123,7 @@ fun HiFiAudioSettingsScreen(
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Choose which audio streams OmniCall captures when you tap Record during a call.",
+                                text = "Choose which audio streams OmniCall captures during calls.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -136,7 +163,7 @@ fun HiFiAudioSettingsScreen(
                     }
                 }
 
-                // 2. Manual Call Recording Format
+                // 2. Capture Engine (AudioRecord non-zero verification + MediaRecorder AudioSource.MIC)
                 item {
                     Surface(
                         shape = RoundedCornerShape(20.dp),
@@ -145,7 +172,63 @@ fun HiFiAudioSettingsScreen(
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(
-                                text = "Manual Call Recording Format",
+                                text = "Recording Capture Engine",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Auto verifies non-silent PCM signal and switches to MediaRecorder (MIC) if your phone silences standard capture.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            RecordingEngine.entries.forEach { engine ->
+                                val selected = uiState.settings.recordingEngine == engine
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { viewModel.setRecordingEngine(engine) }
+                                        .padding(vertical = 7.dp, horizontal = 4.dp)
+                                        .testTag("recording_engine_${engine.name.lowercase()}"),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(
+                                        selected = selected,
+                                        onClick = { viewModel.setRecordingEngine(engine) }
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = engine.label,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = engine.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Call Recording File Format
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Recording Format",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary
@@ -171,7 +254,7 @@ fun HiFiAudioSettingsScreen(
                     }
                 }
 
-                // 3. Hi-Fi Audio DSP & Codecs
+                // 4. Hi-Fi Audio DSP & Codecs
                 item {
                     Surface(
                         shape = RoundedCornerShape(20.dp),

@@ -108,6 +108,16 @@
             </intent-filter>
         </service>
 
+        <!-- Telecom CallScreeningService for blocking incoming calls silently -->
+        <service
+            android:name=".telecom.OmniCallScreeningService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
+
         <!-- Foreground Service keeping active SIP calls & audio recording alive -->
         <service
             android:name=".telecom.VoipCallForegroundService"

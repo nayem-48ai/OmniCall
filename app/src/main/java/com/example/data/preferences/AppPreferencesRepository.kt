@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.domain.model.OutgoingRoutingMode
+import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingFormat
 import com.example.domain.model.RecordingType
 import com.example.ui.theme.ThemePreference
@@ -22,6 +23,8 @@ data class AppSettingsState(
     val outgoingRoutingMode: OutgoingRoutingMode = OutgoingRoutingMode.ASK_EVERY_TIME,
     val recordingFormat: RecordingFormat = RecordingFormat.AAC_M4A,
     val recordingType: RecordingType = RecordingType.INTERNAL_AND_EXTERNAL,
+    val recordingEngine: RecordingEngine = RecordingEngine.AUTO,
+    val autoCallRecording: Boolean = false,
     val preferWidebandCodecs: Boolean = true,
     val enableHardwareAec: Boolean = true,
     val enableHardwareNs: Boolean = true,
@@ -36,6 +39,8 @@ class AppPreferencesRepository(private val context: Context) {
         val ROUTING_MODE = stringPreferencesKey("outgoing_routing_mode")
         val RECORDING_FORMAT = stringPreferencesKey("recording_format")
         val RECORDING_TYPE = stringPreferencesKey("recording_type")
+        val RECORDING_ENGINE = stringPreferencesKey("recording_engine")
+        val AUTO_CALL_RECORDING = booleanPreferencesKey("auto_call_recording")
         val WIDEBAND_CODECS = booleanPreferencesKey("prefer_wideband_codecs")
         val HARDWARE_AEC = booleanPreferencesKey("enable_hardware_aec")
         val HARDWARE_NS = booleanPreferencesKey("enable_hardware_ns")
@@ -55,6 +60,10 @@ class AppPreferencesRepository(private val context: Context) {
             recordingType = prefs[Keys.RECORDING_TYPE]?.let {
                 runCatching { RecordingType.valueOf(it) }.getOrNull()
             } ?: RecordingType.INTERNAL_AND_EXTERNAL,
+            recordingEngine = prefs[Keys.RECORDING_ENGINE]?.let {
+                runCatching { RecordingEngine.valueOf(it) }.getOrNull()
+            } ?: RecordingEngine.AUTO,
+            autoCallRecording = prefs[Keys.AUTO_CALL_RECORDING] ?: false,
             preferWidebandCodecs = prefs[Keys.WIDEBAND_CODECS] ?: true,
             enableHardwareAec = prefs[Keys.HARDWARE_AEC] ?: true,
             enableHardwareNs = prefs[Keys.HARDWARE_NS] ?: true,
@@ -76,6 +85,14 @@ class AppPreferencesRepository(private val context: Context) {
 
     suspend fun setRecordingType(type: RecordingType) {
         context.appPrefsDataStore.edit { it[Keys.RECORDING_TYPE] = type.name }
+    }
+
+    suspend fun setRecordingEngine(engine: RecordingEngine) {
+        context.appPrefsDataStore.edit { it[Keys.RECORDING_ENGINE] = engine.name }
+    }
+
+    suspend fun setAutoCallRecording(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.AUTO_CALL_RECORDING] = enabled }
     }
 
     suspend fun setAudioProcessing(

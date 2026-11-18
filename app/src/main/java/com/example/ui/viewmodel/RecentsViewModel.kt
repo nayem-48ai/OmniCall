@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.AppContainer
+import com.example.data.repository.BlocklistRepository
 import com.example.data.repository.CallLogItem
 import com.example.data.repository.ContactItem
 import com.example.domain.model.CallDirection
@@ -24,13 +25,15 @@ enum class RecentsFilter(val label: String) {
 data class EnrichedCallLogItem(
     val log: CallLogItem,
     val displayName: String,
-    val photoUri: String?
+    val photoUri: String?,
+    val isBlocked: Boolean = false
 )
 
 data class CallHistoryDetail(
     val remoteHandle: String,
     val displayName: String,
     val photoUri: String?,
+    val isBlocked: Boolean = false,
     val entries: List<CallLogItem>
 )
 
@@ -63,7 +66,7 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
             val map = hashMapOf<String, ContactItem>()
             contacts.forEach { contact ->
                 contact.phoneNumbers.forEach { phone ->
-                    val key = normalizeForMatch(phone.number)
+                    val key = BlocklistRepository.normalizeKey(phone.number)
                     if (key.isNotEmpty()) map[key] = contact
                 }
             }
@@ -86,7 +89,7 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
             RecentsFilter.SIM -> logs.filter { it.sourceType != CallSourceType.SIP }
         }
         val enrichedAll = baseFiltered.map { log ->
-            val match = contactMap[normalizeForMatch(log.remoteHandle)]
+            val match = contactMap[BlocklistRepository.normalizeKey(log.remoteHandle)]
             EnrichedCallLogItem(
                 log = log,
                 displayName = match?.displayName ?: log.displayName.ifBlank { log.remoteHandle },
@@ -107,8 +110,8 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
         }
 
         val detail = selectedHandle?.let { handle ->
-            val targetKey = normalizeForMatch(handle)
-            val matching = logs.filter { normalizeForMatch(it.remoteHandle) == targetKey }
+            val targetKey = BlocklistRepository.normalizeKey(handle)
+            val matching = logs.filter { BlocklistRepository.normalizeKey(it.remoteHandle) == targetKey }
             val matchedContact = contactMap[targetKey]
             val bestName = matchedContact?.displayName
                 ?: matching.firstOrNull { it.displayName.isNotBlank() }?.displayName
@@ -126,6 +129,18 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
             searchQuery = query,
             items = filteredItems,
             selectedHistory = detail
+        )
+    }.combine(container.blocklistRepository.blockedFlow) { state, blockedList ->
+        val blockedKeys = blockedList.map { it.normalizedKey }.toSet()
+        state.copy(
+            items = state.items.map { item ->
+                val key = BlocklistRepository.normalizeKey(item.log.remoteHandle)
+                item.copy(isBlocked = key in blockedKeys)
+            },
+            selectedHistory = state.selectedHistory?.let { detail ->
+                val key = BlocklistRepository.normalizeKey(detail.remoteHandle)
+                detail.copy(isBlocked = key in blockedKeys)
+            }
         )
     }.combine(_allContacts) { state, allContacts ->
         val q = state.searchQuery.trim().lowercase()
@@ -180,16 +195,20 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    fun clearAll() {
+    fun deleteEntries(ids: Set<Long>) {
+        if (ids.isEmpty()) return
         viewModelScope.launch {
-            container.callLogRepository.clearAll()
+            container.callLogRepository.deleteCalls(ids.toList())
         }
     }
 
-    private fun normalizeForMatch(handle: String): String {
-        val trimmed = handle.trim().lowercase()
-        if (trimmed.contains("@")) return trimmed
-        val digits = trimmed.filter { it.isDigit() }
-        return if (digits.length > 8) digits.takeLast(9) else digits.ifEmpty { trimmed }
+    fun toggleBlockNumber(handle: String, displayName: String, currentlyBlocked: Boolean) {
+        viewModelScope.launch {
+            if (currentlyBlocked) {
+                container.blocklistRepository.unblockNumber(handle)
+            } else {
+                container.blocklistRepository.blockNumber(handle, displayName)
+            }
+        }
     }
 }

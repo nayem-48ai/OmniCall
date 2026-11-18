@@ -39,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -55,9 +57,11 @@ import com.example.ui.contacts.ContactsScreen
 import com.example.ui.dialer.DialerScreen
 import com.example.ui.recents.RecentsScreen
 import com.example.ui.recordings.RecordingsScreen
+import com.example.ui.settings.BlocklistScreen
 import com.example.ui.settings.HiFiAudioSettingsScreen
 import com.example.ui.settings.SipSettingsScreen
 import com.example.ui.theme.OmniCallTheme
+import com.example.ui.viewmodel.BlocklistViewModel
 import com.example.ui.viewmodel.ContactsViewModel
 import com.example.ui.viewmodel.DialerViewModel
 import com.example.ui.viewmodel.OmniCallViewModelFactory
@@ -72,6 +76,7 @@ import kotlinx.serialization.Serializable
 @Serializable object SettingsRoute
 @Serializable object RecordingsRoute
 @Serializable object HiFiAudioSettingsRoute
+@Serializable object BlocklistRoute
 
 private data class NavItem(
     val route: Any,
@@ -141,12 +146,22 @@ private fun OmniCallRoot(
     val contactsViewModel: ContactsViewModel = viewModel(factory = factory)
     val recordingsViewModel: RecordingsViewModel = viewModel(factory = factory)
     val settingsViewModel: SipSettingsViewModel = viewModel(factory = factory)
+    val blocklistViewModel: BlocklistViewModel = viewModel(factory = factory)
 
     val dialerState by dialerViewModel.uiState.collectAsStateWithLifecycle()
     val recentsState by recentsViewModel.uiState.collectAsStateWithLifecycle()
     val contactsState by contactsViewModel.uiState.collectAsStateWithLifecycle()
     val recordingsState by recordingsViewModel.uiState.collectAsStateWithLifecycle()
     val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val blocklistState by blocklistViewModel.uiState.collectAsStateWithLifecycle()
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        dialerViewModel.refreshHardwareEnvironment()
+        settingsViewModel.refreshEnvironment()
+        contactsViewModel.refreshContacts()
+        recentsViewModel.refreshContactsIndex()
+        blocklistViewModel.refreshContacts()
+    }
 
     val activeCall by app.container.activeCallCoordinator.activeCall.collectAsStateWithLifecycle()
     val elapsedSeconds by app.container.activeCallCoordinator.elapsedSeconds.collectAsStateWithLifecycle()
@@ -187,6 +202,7 @@ private fun OmniCallRoot(
     ) {
         contactsViewModel.refreshContacts()
         recentsViewModel.refreshContactsIndex()
+        blocklistViewModel.refreshContacts()
     }
 
     LaunchedEffect(Unit) {
@@ -239,7 +255,8 @@ private fun OmniCallRoot(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val isSettingsSubScreen = currentDestination?.hasRoute(RecordingsRoute::class) == true ||
-        currentDestination?.hasRoute(HiFiAudioSettingsRoute::class) == true
+        currentDestination?.hasRoute(HiFiAudioSettingsRoute::class) == true ||
+        currentDestination?.hasRoute(BlocklistRoute::class) == true
 
     val navigateToTab: (Any) -> Unit = { route ->
         navController.navigate(route) {
@@ -333,7 +350,8 @@ private fun OmniCallRoot(
                                 navigateToTab(DialerRoute)
                             },
                             onDeleteItem = recentsViewModel::deleteEntry,
-                            onClearAll = recentsViewModel::clearAll
+                            onDeleteSelected = recentsViewModel::deleteEntries,
+                            onToggleBlockNumber = recentsViewModel::toggleBlockNumber
                         )
                     }
                     composable<ContactsRoute> {
@@ -374,6 +392,9 @@ private fun OmniCallRoot(
                             },
                             onOpenHiFiAudioSettings = {
                                 navController.navigate(HiFiAudioSettingsRoute)
+                            },
+                            onOpenBlocklist = {
+                                navController.navigate(BlocklistRoute)
                             }
                         )
                     }
@@ -388,6 +409,16 @@ private fun OmniCallRoot(
                         HiFiAudioSettingsScreen(
                             uiState = settingsState,
                             viewModel = settingsViewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable<BlocklistRoute> {
+                        BlocklistScreen(
+                            uiState = blocklistState,
+                            viewModel = blocklistViewModel,
+                            onRequestContactsPermission = {
+                                contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                            },
                             onBack = { navController.popBackStack() }
                         )
                     }

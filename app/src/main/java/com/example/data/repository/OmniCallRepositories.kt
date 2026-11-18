@@ -1,5 +1,11 @@
 package com.example.data.repository
 
+import android.content.ContentValues
+import android.content.Context
+import android.os.Build
+import android.provider.BlockedNumberContract
+import com.example.data.local.BlockedNumberEntity
+import com.example.data.local.BlocklistDao
 import com.example.data.local.CallLogDao
 import com.example.data.local.CallLogEntity
 import com.example.data.local.RecordingDao
@@ -7,6 +13,7 @@ import com.example.data.local.RecordingEntity
 import com.example.data.local.SipAccountDao
 import com.example.data.local.SipAccountEntity
 import com.example.data.security.KeystoreCredentialVault
+import com.example.domain.model.BlockedNumberItem
 import com.example.domain.model.CallDirection
 import com.example.domain.model.CallSourceType
 import com.example.domain.model.RecordingFormat
@@ -212,6 +219,10 @@ class CallLogRepository(private val dao: CallLogDao) {
 
     suspend fun deleteCall(id: Long) = dao.deleteById(id)
 
+    suspend fun deleteCalls(ids: List<Long>) {
+        if (ids.isNotEmpty()) dao.deleteByIds(ids)
+    }
+
     suspend fun clearAll() = dao.clearAll()
 }
 
@@ -254,5 +265,104 @@ class RecordingRepository(private val dao: RecordingDao) {
     suspend fun deleteRecording(item: RecordingItem) {
         runCatching { File(item.filePath).delete() }
         dao.deleteById(item.id)
+    }
+}
+
+class BlocklistRepository(
+    private val context: Context,
+    private val dao: BlocklistDao
+) {
+    val blockedFlow: Flow<List<BlockedNumberItem>> = dao.observeAll().map { list ->
+        list.map { it.toDomain() }
+    }
+
+    suspend fun getAllBlocked(): List<BlockedNumberItem> = dao.getAll().map { it.toDomain() }
+
+    suspend fun isBlocked(handle: String): Boolean {
+        val key = normalizeKey(handle)
+        if (key.isEmpty()) return false
+        val localHit = dao.getAll().any { it.normalizedKey == key }
+        if (localHit) return true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val sysHit = runCatching {
+                if (BlockedNumberContract.canCurrentUserBlockNumbers(context)) {
+                    BlockedNumberContract.isBlocked(context, handle)
+                } else false
+            }.getOrDefault(false)
+            if (sysHit) return true
+        }
+        return false
+    }
+
+    suspend fun blockNumber(number: String, displayName: String? = null) {
+        val cleanRaw = number.trim()
+        val key = normalizeKey(cleanRaw)
+        if (cleanRaw.isEmpty() || key.isEmpty()) return
+        dao.insert(
+            BlockedNumberEntity(
+                rawNumber = cleanRaw,
+                normalizedKey = key,
+                displayName = displayName?.takeIf { it.isNotBlank() } ?: cleanRaw,
+                createdAtMs = System.currentTimeMillis()
+            )
+        )
+        syncSystemBlock(cleanRaw, block = true)
+    }
+
+    suspend fun unblockNumber(handle: String) {
+        val key = normalizeKey(handle)
+        if (key.isNotEmpty()) {
+            dao.deleteByNormalizedKey(key)
+        }
+        syncSystemBlock(handle.trim(), block = false)
+    }
+
+    suspend fun unblockItem(item: BlockedNumberItem) {
+        dao.deleteById(item.id)
+        syncSystemBlock(item.rawNumber, block = false)
+    }
+
+    suspend fun unblockItems(items: List<BlockedNumberItem>) {
+        if (items.isEmpty()) return
+        dao.deleteByIds(items.map { it.id })
+        items.forEach { syncSystemBlock(it.rawNumber, block = false) }
+    }
+
+    private fun syncSystemBlock(rawNumber: String, block: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || rawNumber.contains("@")) return
+        runCatching {
+            if (!BlockedNumberContract.canCurrentUserBlockNumbers(context)) return
+            if (block) {
+                if (!BlockedNumberContract.isBlocked(context, rawNumber)) {
+                    val values = ContentValues().apply {
+                        put(BlockedNumberContract.BlockedNumbers.COLUMN_ORIGINAL_NUMBER, rawNumber)
+                    }
+                    context.contentResolver.insert(BlockedNumberContract.BlockedNumbers.CONTENT_URI, values)
+                }
+            } else {
+                BlockedNumberContract.unblock(context, rawNumber)
+            }
+        }
+    }
+
+    private fun BlockedNumberEntity.toDomain() = BlockedNumberItem(
+        id = id,
+        rawNumber = rawNumber,
+        normalizedKey = normalizedKey,
+        displayName = displayName,
+        createdAtMs = createdAtMs
+    )
+
+    companion object {
+        fun normalizeKey(handle: String): String {
+            val trimmed = handle.trim().lowercase().removePrefix("sip:")
+            if (trimmed.contains("@")) {
+                val user = trimmed.substringBefore("@")
+                val domain = trimmed.substringAfter("@")
+                return "$user@$domain"
+            }
+            val digits = trimmed.filter { it.isDigit() }
+            return if (digits.length > 8) digits.takeLast(9) else digits.ifEmpty { trimmed }
+        }
     }
 }

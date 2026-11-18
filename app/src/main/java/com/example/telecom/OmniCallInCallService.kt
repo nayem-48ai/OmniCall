@@ -32,11 +32,27 @@ class OmniCallInCallService : InCallService() {
 
     override fun onCallAdded(call: Call) {
         super.onCallAdded(call)
+        val state = getCallStateCompat(call)
+        val handle = call.details.handle?.schemeSpecificPart.orEmpty()
+        if (state == Call.STATE_RINGING && handle.isNotBlank()) {
+            val app = applicationContext as? OmniCallApplication
+            val blocked = app?.let {
+                kotlinx.coroutines.runBlocking {
+                    runCatching { it.container.blocklistRepository.isBlocked(handle) }
+                        .getOrDefault(false)
+                }
+            } ?: false
+            if (blocked) {
+                runCatching { call.reject(false, null) }
+                runCatching { call.disconnect() }
+                return
+            }
+        }
+
         currentCall = call
         call.registerCallback(callCallback)
         ActiveCallCoordinator.bindNativeInCallService(this, call)
 
-        val state = getCallStateCompat(call)
         syncCallState(call, state)
 
         // Bring OmniCall's own InCallScreen UI to foreground immediately

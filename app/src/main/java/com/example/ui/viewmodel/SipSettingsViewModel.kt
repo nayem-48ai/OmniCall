@@ -6,6 +6,7 @@ import com.example.AppContainer
 import com.example.data.preferences.AppSettingsState
 import com.example.domain.model.AvailableCallingEnvironment
 import com.example.domain.model.OutgoingRoutingMode
+import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingFormat
 import com.example.domain.model.RecordingType
 import com.example.domain.model.SimSlotInfo
@@ -47,6 +48,7 @@ data class SipSettingsUiState(
     val simSlots: List<SimSlotInfo> = emptyList(),
     val isDefaultDialer: Boolean = false,
     val recordingsCount: Int = 0,
+    val blockedCount: Int = 0,
     val settings: AppSettingsState = AppSettingsState(),
     val environment: AvailableCallingEnvironment = AvailableCallingEnvironment(),
     val showAddAccountSheet: Boolean = false,
@@ -57,18 +59,17 @@ data class SipSettingsUiState(
 
 class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
 
-    private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(emptyList())
-    private val _isDefaultDialer = MutableStateFlow(false)
+    private val initialSims = container.simSubscriptionDetector.detectActiveSims()
+    private val initialIsDefault = container.telecomCallManager.isDefaultDialer()
+
+    private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(initialSims)
+    private val _isDefaultDialer = MutableStateFlow(initialIsDefault)
     private val _showSheet = MutableStateFlow(false)
     private val _form = MutableStateFlow(SipFormState())
     private val _managedAccountId = MutableStateFlow<Long?>(null)
     private val _isCheckingBalance = MutableStateFlow(false)
 
     private var discoveryJob: Job? = null
-
-    init {
-        refreshEnvironment()
-    }
 
     val uiState: StateFlow<SipSettingsUiState> = combine(
         container.sipAccountRepository.accountsFlow,
@@ -99,6 +100,8 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         )
     }.combine(container.recordingRepository.recordingsFlow) { state, recordings ->
         state.copy(recordingsCount = recordings.size)
+    }.combine(container.blocklistRepository.blockedFlow) { state, blocked ->
+        state.copy(blockedCount = blocked.size)
     }.combine(_managedAccountId) { state, managedId ->
         state.copy(
             managedAccount = managedId?.let { id -> state.accounts.firstOrNull { it.id == id } }
@@ -108,7 +111,14 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = SipSettingsUiState()
+        initialValue = SipSettingsUiState(
+            simSlots = initialSims,
+            isDefaultDialer = initialIsDefault,
+            environment = AvailableCallingEnvironment(
+                simSlots = initialSims,
+                isDefaultDialer = initialIsDefault
+            )
+        )
     )
 
     fun refreshEnvironment() {
@@ -350,6 +360,18 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun setRecordingType(type: RecordingType) {
         viewModelScope.launch {
             container.preferencesRepository.setRecordingType(type)
+        }
+    }
+
+    fun setRecordingEngine(engine: RecordingEngine) {
+        viewModelScope.launch {
+            container.preferencesRepository.setRecordingEngine(engine)
+        }
+    }
+
+    fun setAutoCallRecording(enabled: Boolean) {
+        viewModelScope.launch {
+            container.preferencesRepository.setAutoCallRecording(enabled)
         }
     }
 

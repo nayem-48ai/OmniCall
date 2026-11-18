@@ -1,17 +1,22 @@
 package com.example.telecom
 
+import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.example.OmniCallApplication
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Foreground Service declared with `phoneCall|microphone` types to keep active SIP VoIP calls
- * and manual dual-stream call recording uninterrupted when the screen locks or app backgrounds.
+ * Foreground Service declared with `phoneCall|microphone` types to keep active calls
+ * and call recording uninterrupted when the screen turns off via proximity sensor or backgrounding.
  */
 class VoipCallForegroundService : Service() {
 
@@ -28,17 +33,16 @@ class VoipCallForegroundService : Service() {
             }
             CallNotificationManager.ACTION_DECLINE_CALL -> {
                 coordinator.declineIncomingCall()
-                stopSelf()
+                markInactiveAndStop()
                 return START_NOT_STICKY
             }
             CallNotificationManager.ACTION_HANGUP_CALL -> {
                 coordinator.endActiveCall()
-                stopSelf()
+                markInactiveAndStop()
                 return START_NOT_STICKY
             }
             ACTION_STOP_SERVICE -> {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                markInactiveAndStop()
                 return START_NOT_STICKY
             }
             else -> {
@@ -46,21 +50,40 @@ class VoipCallForegroundService : Service() {
                 val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Active call"
                 val isRec = intent?.getBooleanExtra(EXTRA_RECORDING, false) ?: false
                 val notification = notifManager.buildOngoingCallNotification(title, subtitle, isRec)
-                startForegroundSafely(notification, isRec)
+                val hasMicPerm = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                startForegroundSafely(notification, wantMicrophone = hasMicPerm || isRec)
+                isForegroundMicReady.value = hasMicPerm
+                isForegroundRunning.value = true
             }
         }
         return START_STICKY
     }
 
-    private fun startForegroundSafely(notification: android.app.Notification, preferMicrophone: Boolean) {
+    override fun onDestroy() {
+        isForegroundRunning.value = false
+        isForegroundMicReady.value = false
+        super.onDestroy()
+    }
+
+    private fun markInactiveAndStop() {
+        isForegroundRunning.value = false
+        isForegroundMicReady.value = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun startForegroundSafely(notification: android.app.Notification, wantMicrophone: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val attempts = buildList {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    add(
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    )
-                    if (preferMicrophone) {
+                    if (wantMicrophone) {
+                        add(
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
+                                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        )
                         add(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
                     }
                     add(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
@@ -87,6 +110,9 @@ class VoipCallForegroundService : Service() {
         private const val EXTRA_SUBTITLE = "extra_subtitle"
         private const val EXTRA_RECORDING = "extra_recording"
 
+        val isForegroundRunning = MutableStateFlow(false)
+        val isForegroundMicReady = MutableStateFlow(false)
+
         fun startOrUpdate(context: Context, title: String, subtitle: String, isRecording: Boolean) {
             val intent = Intent(context, VoipCallForegroundService::class.java).apply {
                 action = ACTION_START_OR_UPDATE
@@ -97,7 +123,21 @@ class VoipCallForegroundService : Service() {
             runCatching { ContextCompat.startForegroundService(context, intent) }
         }
 
+        suspend fun startAndAwaitReady(
+            context: Context,
+            title: String,
+            subtitle: String,
+            isRecording: Boolean
+        ) {
+            startOrUpdate(context, title, subtitle, isRecording)
+            withTimeoutOrNull(700L) {
+                isForegroundRunning.first { it }
+            }
+        }
+
         fun stop(context: Context) {
+            isForegroundRunning.value = false
+            isForegroundMicReady.value = false
             val intent = Intent(context, VoipCallForegroundService::class.java).apply {
                 action = ACTION_STOP_SERVICE
             }

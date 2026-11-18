@@ -5,6 +5,7 @@ import com.example.audio.DualStreamCallRecorder
 import com.example.audio.RtpAudioEngine
 import com.example.data.local.OmniCallDatabase
 import com.example.data.preferences.AppPreferencesRepository
+import com.example.data.repository.BlocklistRepository
 import com.example.data.repository.CallLogRepository
 import com.example.data.repository.ContactsRepository
 import com.example.data.repository.RecordingRepository
@@ -38,6 +39,7 @@ class AppContainer(application: Application) {
     val sipAccountRepository = SipAccountRepository(database.sipAccountDao(), credentialVault)
     val callLogRepository = CallLogRepository(database.callLogDao())
     val recordingRepository = RecordingRepository(database.recordingDao())
+    val blocklistRepository = BlocklistRepository(application, database.blocklistDao())
     val contactsRepository = ContactsRepository(application)
 
     val eventBus: CallEventBus = DefaultCallEventBus()
@@ -65,6 +67,7 @@ class AppContainer(application: Application) {
         telecomCallManager = telecomCallManager,
         simDetector = simSubscriptionDetector,
         contactsRepository = contactsRepository,
+        blocklistRepository = blocklistRepository,
         sipClientEngine = sipClientEngine,
         rtpAudioEngine = rtpAudioEngine,
         callRecorder = dualStreamCallRecorder,

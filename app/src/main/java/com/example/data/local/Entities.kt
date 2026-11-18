@@ -1,6 +1,7 @@
 package com.example.data.local
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "sip_accounts")
@@ -51,5 +52,17 @@ data class RecordingEntity(
     val remoteHandle: String,
     val remoteDisplayName: String,
     val sourceLabel: String,
+    val createdAtMs: Long
+)
+
+@Entity(
+    tableName = "blocked_numbers",
+    indices = [Index(value = ["normalizedKey"], unique = true)]
+)
+data class BlockedNumberEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val rawNumber: String,
+    val normalizedKey: String,
+    val displayName: String,
     val createdAtMs: Long
 )

@@ -1,7 +1,12 @@
 package com.example.ui.recents
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,7 +30,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CallMade
 import androidx.compose.material.icons.automirrored.rounded.CallMissed
 import androidx.compose.material.icons.automirrored.rounded.CallReceived
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dialpad
@@ -33,7 +40,9 @@ import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -47,8 +56,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +70,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -78,6 +92,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecentsScreen(
     uiState: RecentsUiState,
@@ -90,10 +105,20 @@ fun RecentsScreen(
     onCallBack: (String) -> Unit,
     onEditInKeypad: (String) -> Unit,
     onDeleteItem: (Long) -> Unit,
-    onClearAll: () -> Unit,
+    onDeleteSelected: (Set<Long>) -> Unit,
+    onToggleBlockNumber: (handle: String, displayName: String, isBlocked: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val hasSearchQuery = uiState.searchQuery.isNotBlank()
+    val haptics = LocalHapticFeedback.current
+
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    val isSelectionMode = selectedIds.isNotEmpty()
+    var pendingSwipeDeleteEntry by remember { mutableStateOf<EnrichedCallLogItem?>(null) }
+
+    BackHandler(enabled = isSelectionMode) {
+        selectedIds = emptySet()
+    }
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -104,26 +129,88 @@ fun RecentsScreen(
                 .fillMaxSize()
                 .widthIn(max = 640.dp)
         ) {
-            // Top Pill Search Bar (replaces the "Recents" title and searches both Recents + Contacts)
-            RecentsPillSearchBar(
-                query = uiState.searchQuery,
-                onQueryChange = onSearchChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(top = 12.dp, bottom = 10.dp)
-            )
+            if (isSelectionMode) {
+                // Contextual Multi-Select Bar (Google Phone style)
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(top = 12.dp, bottom = 10.dp)
+                        .testTag("recents_selection_bar")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { selectedIds = emptySet() },
+                            modifier = Modifier.testTag("recents_selection_close")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Cancel selection"
+                            )
+                        }
+                        Text(
+                            text = "${selectedIds.size} selected",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        val allVisibleIds = uiState.items.map { it.log.id }.toSet()
+                        val allSelected = allVisibleIds.isNotEmpty() && selectedIds.containsAll(allVisibleIds)
+                        TextButton(
+                            onClick = {
+                                selectedIds = if (allSelected) emptySet() else allVisibleIds
+                            },
+                            modifier = Modifier.testTag("recents_select_all_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SelectAll,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (allSelected) "Deselect" else "Select All")
+                        }
+                        IconButton(
+                            onClick = {
+                                onDeleteSelected(selectedIds)
+                                selectedIds = emptySet()
+                            },
+                            modifier = Modifier.testTag("recents_delete_selected_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.DeleteOutline,
+                                contentDescription = "Delete selected call logs",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Top Pill Search Bar (replaces the "Recents" title and searches both Recents + Contacts)
+                RecentsPillSearchBar(
+                    query = uiState.searchQuery,
+                    onQueryChange = onSearchChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(top = 12.dp, bottom = 10.dp)
+                )
+            }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            AnimatedVisibility(visible = !isSelectionMode) {
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
                 ) {
                     items(RecentsFilter.entries) { filter ->
                         FilterChip(
@@ -132,16 +219,6 @@ fun RecentsScreen(
                             label = { Text(filter.label, maxLines = 1, softWrap = false) },
                             modifier = Modifier.testTag("recents_filter_${filter.name.lowercase()}")
                         )
-                    }
-                }
-                if (uiState.items.isNotEmpty() && !hasSearchQuery) {
-                    TextButton(
-                        onClick = onClearAll,
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .testTag("recents_clear_all_button")
-                    ) {
-                        Text("Clear all")
                     }
                 }
             }
@@ -170,7 +247,7 @@ fun RecentsScreen(
                         text = if (hasSearchQuery) {
                             "Try a different name or phone number."
                         } else {
-                            "Tap any entry to inspect call history, or tap Call to redial."
+                            "Tap an entry for history, press & hold to multi-select, or swipe left to delete."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -182,7 +259,7 @@ fun RecentsScreen(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    if (hasSearchQuery && uiState.items.isNotEmpty()) {
+                    if (hasSearchQuery && uiState.items.isNotEmpty() && !isSelectionMode) {
                         item {
                             Text(
                                 text = "Recent Calls (${uiState.items.size})",
@@ -194,16 +271,85 @@ fun RecentsScreen(
                     }
 
                     items(uiState.items, key = { "log_${it.log.id}" }) { entry ->
-                        CallLogCard(
-                            entry = entry,
-                            onInspectHistory = { onOpenCallHistory(entry.log.remoteHandle) },
-                            onCallBack = { onCallBack(entry.log.remoteHandle) },
-                            onEditInKeypad = { onEditInKeypad(entry.log.remoteHandle) },
-                            onDelete = { onDeleteItem(entry.log.id) }
-                        )
+                        val isItemSelected = entry.log.id in selectedIds
+                        val toggleItemSelection = {
+                            selectedIds = if (isItemSelected) {
+                                selectedIds - entry.log.id
+                            } else {
+                                selectedIds + entry.log.id
+                            }
+                        }
+
+                        if (isSelectionMode) {
+                            CallLogCard(
+                                entry = entry,
+                                isSelected = isItemSelected,
+                                isSelectionMode = true,
+                                onClick = toggleItemSelection,
+                                onLongClick = toggleItemSelection,
+                                onInspectHistory = { },
+                                onCallBack = { },
+                                onEditInKeypad = { },
+                                onToggleBlock = { },
+                                onDelete = { }
+                            )
+                        } else {
+                            val dismissState = rememberSwipeToDismissBoxState(
+                                confirmValueChange = { targetValue ->
+                                    if (targetValue == SwipeToDismissBoxValue.EndToStart) {
+                                        pendingSwipeDeleteEntry = entry
+                                    }
+                                    // Always snap back visually; actual deletion happens only on AlertDialog confirmation
+                                    false
+                                }
+                            )
+                            SwipeToDismissBox(
+                                state = dismissState,
+                                enableDismissFromStartToEnd = false,
+                                enableDismissFromEndToStart = true,
+                                backgroundContent = {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(MaterialTheme.colorScheme.errorContainer)
+                                            .padding(horizontal = 20.dp),
+                                        contentAlignment = Alignment.CenterEnd
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.DeleteOutline,
+                                            contentDescription = "Swipe to delete",
+                                            tint = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    }
+                                }
+                            ) {
+                                CallLogCard(
+                                    entry = entry,
+                                    isSelected = false,
+                                    isSelectionMode = false,
+                                    onClick = { onOpenCallHistory(entry.log.remoteHandle) },
+                                    onLongClick = {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        selectedIds = setOf(entry.log.id)
+                                    },
+                                    onInspectHistory = { onOpenCallHistory(entry.log.remoteHandle) },
+                                    onCallBack = { onCallBack(entry.log.remoteHandle) },
+                                    onEditInKeypad = { onEditInKeypad(entry.log.remoteHandle) },
+                                    onToggleBlock = {
+                                        onToggleBlockNumber(
+                                            entry.log.remoteHandle,
+                                            entry.displayName,
+                                            entry.isBlocked
+                                        )
+                                    },
+                                    onDelete = { onDeleteItem(entry.log.id) }
+                                )
+                            }
+                        }
                     }
 
-                    if (hasSearchQuery && uiState.matchingContacts.isNotEmpty()) {
+                    if (hasSearchQuery && uiState.matchingContacts.isNotEmpty() && !isSelectionMode) {
                         item {
                             Text(
                                 text = "Contacts (${uiState.matchingContacts.size})",
@@ -229,6 +375,32 @@ fun RecentsScreen(
         }
     }
 
+    pendingSwipeDeleteEntry?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingSwipeDeleteEntry = null },
+            title = { Text("Delete History?") },
+            text = {
+                Text("Do you want to delete this call log with ${target.displayName}?")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteItem(target.log.id)
+                        pendingSwipeDeleteEntry = null
+                    },
+                    modifier = Modifier.testTag("confirm_swipe_delete_recent")
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingSwipeDeleteEntry = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     uiState.selectedHistory?.let { history ->
         CallHistoryBottomSheet(
             detail = history,
@@ -239,6 +411,9 @@ fun RecentsScreen(
             onEditInKeypad = {
                 onCloseCallHistory()
                 onEditInKeypad(history.remoteHandle)
+            },
+            onToggleBlock = {
+                onToggleBlockNumber(history.remoteHandle, history.displayName, history.isBlocked)
             },
             onDeleteEntry = onDeleteItem,
             onDismiss = onCloseCallHistory
@@ -410,12 +585,18 @@ private fun MatchingContactCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CallLogCard(
     entry: EnrichedCallLogItem,
+    isSelected: Boolean,
+    isSelectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onInspectHistory: () -> Unit,
     onCallBack: () -> Unit,
     onEditInKeypad: () -> Unit,
+    onToggleBlock: () -> Unit,
     onDelete: () -> Unit
 ) {
     val item = entry.log
@@ -437,14 +618,32 @@ private fun CallLogCard(
         else -> "SIM 1"
     }
 
+    val cardColor = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onInspectHistory)
+            .then(
+                if (isSelected) {
+                    Modifier.border(
+                        width = 1.5.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                } else Modifier
+            )
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .testTag("recent_call_card_${item.id}"),
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        color = cardColor
     ) {
         Row(
             modifier = Modifier
@@ -453,25 +652,42 @@ private fun CallLogCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(contentAlignment = Alignment.BottomEnd) {
-                ContactAvatar(
-                    displayName = entry.displayName,
-                    photoUri = entry.photoUri,
-                    size = 46.dp,
-                    fontSize = 18.sp
-                )
-                Box(
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surface),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = directionIcon,
-                        contentDescription = item.direction.name,
-                        tint = directionTint,
-                        modifier = Modifier.size(12.dp)
+                if (isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = "Selected",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                } else {
+                    ContactAvatar(
+                        displayName = entry.displayName,
+                        photoUri = entry.photoUri,
+                        size = 46.dp,
+                        fontSize = 18.sp
                     )
+                    Box(
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surface),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = directionIcon,
+                            contentDescription = item.direction.name,
+                            tint = directionTint,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
                 }
             }
 
@@ -486,21 +702,40 @@ private fun CallLogCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = entry.displayName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (item.direction == CallDirection.MISSED) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         modifier = Modifier
                             .weight(1f)
                             .padding(end = 8.dp)
-                    )
+                    ) {
+                        Text(
+                            text = entry.displayName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = when {
+                                entry.isBlocked -> MaterialTheme.colorScheme.error
+                                item.direction == CallDirection.MISSED -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (entry.isBlocked) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    text = "Blocked",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
                     Text(
                         text = formatCompactTime(item.timestampMs),
                         style = MaterialTheme.typography.labelSmall,
@@ -570,63 +805,88 @@ private fun CallLogCard(
                 }
             }
 
-            Spacer(modifier = Modifier.width(6.dp))
+            if (!isSelectionMode) {
+                Spacer(modifier = Modifier.width(6.dp))
 
-            FilledTonalIconButton(
-                onClick = onCallBack,
-                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                    contentColor = MaterialTheme.colorScheme.primary
-                ),
-                modifier = Modifier
-                    .size(44.dp)
-                    .testTag("redial_button_${item.id}")
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Call,
-                    contentDescription = "Call back ${entry.displayName}",
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            Box {
-                IconButton(
-                    onClick = { showMenu = true },
-                    modifier = Modifier.size(36.dp)
+                FilledTonalIconButton(
+                    onClick = onCallBack,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        contentColor = MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("redial_button_${item.id}")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.MoreVert,
-                        contentDescription = "More options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
+                        imageVector = Icons.Rounded.Call,
+                        contentDescription = "Call back ${entry.displayName}",
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Call history") },
-                        onClick = {
-                            showMenu = false
-                            onInspectHistory()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Edit in keypad") },
-                        onClick = {
-                            showMenu = false
-                            onEditInKeypad()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete entry", color = MaterialTheme.colorScheme.error) },
-                        onClick = {
-                            showMenu = false
-                            onDelete()
-                        },
-                        modifier = Modifier.testTag("delete_recent_${item.id}")
-                    )
+
+                Box {
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("recent_more_${item.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MoreVert,
+                            contentDescription = "More options",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Call history") },
+                            onClick = {
+                                showMenu = false
+                                onInspectHistory()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Edit in keypad") },
+                            onClick = {
+                                showMenu = false
+                                onEditInKeypad()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = if (entry.isBlocked) "Unblock" else "Block",
+                                    color = if (entry.isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Block,
+                                    contentDescription = null,
+                                    tint = if (entry.isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                showMenu = false
+                                onToggleBlock()
+                            },
+                            modifier = Modifier.testTag("block_recent_${item.id}")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete History", color = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                showMenu = false
+                                onDelete()
+                            },
+                            modifier = Modifier.testTag("delete_recent_${item.id}")
+                        )
+                    }
                 }
             }
         }
@@ -639,6 +899,7 @@ private fun CallHistoryBottomSheet(
     detail: CallHistoryDetail,
     onCallBack: () -> Unit,
     onEditInKeypad: () -> Unit,
+    onToggleBlock: () -> Unit,
     onDeleteEntry: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -669,6 +930,22 @@ private fun CallHistoryBottomSheet(
                         text = detail.remoteHandle,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                TextButton(
+                    onClick = onToggleBlock,
+                    modifier = Modifier.testTag("history_detail_block_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Block,
+                        contentDescription = null,
+                        tint = if (detail.isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (detail.isBlocked) "Unblock" else "Block",
+                        color = if (detail.isBlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                     )
                 }
             }

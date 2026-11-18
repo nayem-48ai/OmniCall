@@ -1,8 +1,10 @@
 package com.example
 
 import com.example.audio.AudioCodecUtils
+import com.example.data.repository.BlocklistRepository
 import com.example.domain.model.AvailableCallingEnvironment
 import com.example.domain.model.OutgoingRoutingMode
+import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingType
 import com.example.domain.model.SimSlotInfo
 import com.example.domain.model.SipAccountModel
@@ -155,5 +157,18 @@ class SipAndRoutingUnitTest {
         )
         assertEquals("https://icctalk.com:2020/OTTSSO/login", acc.resolvedBalanceUrl())
         assertEquals(3, RecordingType.entries.size)
+        assertEquals(3, RecordingEngine.entries.size)
+    }
+
+    @Test
+    fun blocklistNormalizeKey_matchesLocalAndInternationalAndSip() {
+        assertEquals(
+            BlocklistRepository.normalizeKey("+8801712-345678"),
+            BlocklistRepository.normalizeKey("01712345678")
+        )
+        assertEquals(
+            "1002@sip.example.com",
+            BlocklistRepository.normalizeKey("sip:1002@sip.example.com")
+        )
     }
 }

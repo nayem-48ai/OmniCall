@@ -51,6 +51,9 @@ interface CallLogDao {
     @Query("DELETE FROM call_logs WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    @Query("DELETE FROM call_logs WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
+
     @Query("DELETE FROM call_logs")
     suspend fun clearAll()
 }
@@ -65,4 +68,25 @@ interface RecordingDao {
 
     @Query("DELETE FROM recordings WHERE id = :id")
     suspend fun deleteById(id: Long)
+}
+
+@Dao
+interface BlocklistDao {
+    @Query("SELECT * FROM blocked_numbers ORDER BY createdAtMs DESC")
+    fun observeAll(): Flow<List<BlockedNumberEntity>>
+
+    @Query("SELECT * FROM blocked_numbers ORDER BY createdAtMs DESC")
+    suspend fun getAll(): List<BlockedNumberEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: BlockedNumberEntity): Long
+
+    @Query("DELETE FROM blocked_numbers WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM blocked_numbers WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
+
+    @Query("DELETE FROM blocked_numbers WHERE normalizedKey = :key")
+    suspend fun deleteByNormalizedKey(key: String)
 }

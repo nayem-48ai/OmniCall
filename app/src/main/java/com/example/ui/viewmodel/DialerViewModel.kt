@@ -38,9 +38,12 @@ class DialerViewModel(
     private val container: AppContainer
 ) : AndroidViewModel(application) {
 
+    private val initialSims = container.simSubscriptionDetector.detectActiveSims()
+    private val initialIsDefault = container.telecomCallManager.isDefaultDialer()
+
     private val _inputNumber = MutableStateFlow("")
-    private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(emptyList())
-    private val _isDefaultDialer = MutableStateFlow(false)
+    private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(initialSims)
+    private val _isDefaultDialer = MutableStateFlow(initialIsDefault)
     private val _showRoutePickerSheet = MutableStateFlow(false)
     private val _pendingDestination = MutableStateFlow<String?>(null)
     private val _bannerMessage = MutableStateFlow<String?>(null)
@@ -48,10 +51,6 @@ class DialerViewModel(
     private var toneGenerator: ToneGenerator? = runCatching {
         ToneGenerator(AudioManager.STREAM_DTMF, 65)
     }.getOrNull()
-
-    init {
-        refreshHardwareEnvironment()
-    }
 
     val uiState: StateFlow<DialerUiState> = combine(
         _inputNumber,
@@ -94,7 +93,12 @@ class DialerViewModel(
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = DialerUiState()
+        initialValue = DialerUiState(
+            environment = AvailableCallingEnvironment(
+                simSlots = initialSims,
+                isDefaultDialer = initialIsDefault
+            )
+        )
     )
 
     fun refreshHardwareEnvironment() {
@@ -255,6 +259,8 @@ class OmniCallViewModelFactory(
                 ContactsViewModel(container) as T
             modelClass.isAssignableFrom(SipSettingsViewModel::class.java) ->
                 SipSettingsViewModel(container) as T
+            modelClass.isAssignableFrom(BlocklistViewModel::class.java) ->
+                BlocklistViewModel(container) as T
             else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
         }
     }
