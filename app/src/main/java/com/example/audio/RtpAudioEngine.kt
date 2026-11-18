@@ -79,12 +79,15 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
     private var isOnHold: Boolean = false
 
     fun allocateLocalRtpPort(): Int {
-        return runCatching {
-            val probe = DatagramSocket(0)
-            val port = probe.localPort
-            probe.close()
-            port
-        }.getOrDefault(40002)
+        var lastPort = 40002
+        repeat(10) {
+            val port = runCatching {
+                DatagramSocket(0).use { it.localPort }
+            }.getOrNull() ?: return lastPort
+            lastPort = port
+            if (port % 2 == 0) return port
+        }
+        return lastPort
     }
 
     @SuppressLint("MissingPermission")
@@ -210,6 +213,25 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
             var seqNum = Random.nextInt(1, 30000)
             var timestamp = 0L
             val ssrc = Random.nextInt()
+
+            // Immediately transmit 2 silence RTP frames to open/latch carrier NAT RTP pinholes
+            if (socket != null && remoteAddr != null && remotePort > 0 && !isOnHold) {
+                val silencePayload = encodeForPayloadType(ShortArray(frameSamples), payloadType)
+                repeat(2) {
+                    val natPunchPacket = wrapRtpHeader(
+                        payloadType = payloadType,
+                        sequenceNumber = seqNum++,
+                        timestamp = timestamp,
+                        ssrc = ssrc,
+                        payload = silencePayload
+                    )
+                    timestamp += 160
+                    runCatching {
+                        socket.send(DatagramPacket(natPunchPacket, natPunchPacket.size, remoteAddr, remotePort))
+                    }
+                    kotlinx.coroutines.delay(20)
+                }
+            }
 
             while (isActive) {
                 val readCount = recorder?.read(pcmBuffer, 0, frameSamples) ?: 0

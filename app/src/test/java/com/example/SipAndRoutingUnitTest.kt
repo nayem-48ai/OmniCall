@@ -383,4 +383,58 @@ class SipAndRoutingUnitTest {
         assertEquals("rahim@example.com", parsedLegacy[0].email)
         assertEquals("OmniLabs", parsedLegacy[0].organization)
     }
+
+    @Test
+    fun sipClientEngine_buildDialFallbacks_normalizesE164AndBangladeshNumbers() {
+        assertEquals(
+            listOf("01618219098", "8801618219098"),
+            SipClientEngine.buildDialFallbacks("+8801618219098")
+        )
+        assertEquals(
+            listOf("01618219098"),
+            SipClientEngine.buildDialFallbacks("8801618219098")
+        )
+        assertEquals(
+            listOf("14155551234"),
+            SipClientEngine.buildDialFallbacks("+14155551234")
+        )
+        assertEquals(
+            emptyList<String>(),
+            SipClientEngine.buildDialFallbacks("01712345678")
+        )
+        assertEquals(
+            emptyList<String>(),
+            SipClientEngine.buildDialFallbacks("1001@sip.example.com")
+        )
+    }
+
+    @Test
+    fun sipMessageCodec_aggregatesMixedCaseHeadersAndBracketsToInResponse() {
+        val rawInvite = "INVITE sip:09639170537@10.0.0.5:5060 SIP/2.0\r\n" +
+            "Via: SIP/2.0/UDP 203.0.113.10:5060;branch=z9hG4bK-a\r\n" +
+            "v: SIP/2.0/UDP 203.0.113.11:5060;branch=z9hG4bK-b\r\n" +
+            "Record-Route: <sip:edge.icctalk.com;lr>\r\n" +
+            "record-route: <sip:core.icctalk.com;lr>\r\n" +
+            "From: <sip:01618219098@icctalk.com>;tag=from1\r\n" +
+            "To: sip:09639170537@icctalk.com\r\n" +
+            "Call-ID: mix-case-1@icctalk.com\r\n" +
+            "CSeq: 1 INVITE\r\n" +
+            "Content-Length: 0\r\n\r\n"
+
+        val parsed = SipMessageCodec.parse(rawInvite)!!
+        assertEquals(2, parsed.headerValues("Via").size)
+        assertEquals(2, parsed.headerValues("Record-Route").size)
+
+        val response = SipMessageCodec.buildResponse(
+            statusCode = 180,
+            reasonPhrase = "Ringing",
+            request = parsed,
+            localIp = "103.45.67.89",
+            localPort = 45120,
+            username = "09639170537",
+            transport = SipTransport.UDP,
+            toTag = "tag99"
+        )
+        assertTrue(response.contains("To: <sip:09639170537@icctalk.com>;tag=tag99"))
+    }
 }

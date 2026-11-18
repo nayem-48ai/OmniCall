@@ -333,6 +333,19 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
     }
 
     companion object {
+        fun resolveLocalIpv4ForRemote(remoteAddress: InetAddress, remotePort: Int): String {
+            val routed = runCatching {
+                DatagramSocket().use { probe ->
+                    probe.connect(remoteAddress, remotePort.coerceIn(1, 65535))
+                    val addr = probe.localAddress
+                    if (addr is Inet4Address && !addr.isAnyLocalAddress && !addr.isLoopbackAddress) {
+                        addr.hostAddress
+                    } else null
+                }
+            }.getOrNull()
+            return routed ?: resolveLocalIpv4Address()
+        }
+
         fun resolveLocalIpv4Address(): String {
             return runCatching {
                 val ifaces = NetworkInterface.getNetworkInterfaces().toList()

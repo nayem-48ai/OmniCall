@@ -49,7 +49,12 @@ sealed interface SipSignalingEvent {
         val rawRequest: SipRawMessage
     ) : SipSignalingEvent
     data class RemoteTerminated(val callId: String, val reason: String) : SipSignalingEvent
-    data class CallFailed(val callId: String, val reason: String) : SipSignalingEvent
+    data class CallFailed(
+        val callId: String,
+        val reason: String,
+        val statusCode: Int = 0,
+        val beforeEarlyRinging: Boolean = false
+    ) : SipSignalingEvent
 }
 
 sealed interface SipTransportValidationResult {
@@ -85,7 +90,9 @@ private data class ActiveSipDialog(
     var routeSet: List<String> = emptyList(),
     var peerEndpoint: PeerEndpoint? = null,
     @Volatile var gotResponse: Boolean = false,
+    @Volatile var gotEarlyRinging: Boolean = false,
     @Volatile var isConfirmed: Boolean = false,
+    @Volatile var ackReceived: Boolean = false,
     var remoteSdp: SdpMediaSpec? = null,
     var lastInviteRequest: SipRawMessage? = null
 )
@@ -124,6 +131,7 @@ class SipClientEngine(
     @Volatile private var registeredExpiresSec: Int = 120
     @Volatile private var registerCallId: String = ""
     @Volatile private var registerFromTag: String = ""
+    @Volatile private var registerAuthAttempts: Int = 0
     @Volatile private var activeNetworkHandle: Long? = null
     @Volatile private var lastTransportError: String? = null
 
@@ -231,7 +239,7 @@ class SipClientEngine(
         }
 
         transportMutex.withLock {
-            val currentIp = SipAutoConfigEngine.resolveLocalIpv4Address()
+            val currentIp = SipAutoConfigEngine.resolveLocalIpv4ForRemote(resolvedAddr, account.port)
             val prevAcc = activeAccount
             val sameEndpoint = prevAcc != null &&
                 prevAcc.id == account.id &&
@@ -309,6 +317,7 @@ class SipClientEngine(
                 mappedPublicPort = null
                 sentMappedContactOnRegister = false
                 registeredExpiresSec = 120
+                registerAuthAttempts = 0
                 registerCallId = SipMessageCodec.newCallId(account.domain)
                 registerFromTag = SipMessageCodec.newTag()
                 val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -329,6 +338,10 @@ class SipClientEngine(
                         .firstOrNull { it is Inet4Address }
                         ?: InetAddress.getByName(proxyHost)
                 }.getOrNull()
+
+                if (resolvedAddr != null) {
+                    localIp = SipAutoConfigEngine.resolveLocalIpv4ForRemote(resolvedAddr, account.port)
+                }
 
                 val connected = resolvedAddr != null && openTransportSocket(account, resolvedAddr)
                 if (!connected) {
@@ -359,9 +372,14 @@ class SipClientEngine(
         keepAliveJob = scope.launch {
             var elapsedSec = 0
             while (isActive) {
-                delay(15_000L)
-                elapsedSec += 15
-                val currentIp = SipAutoConfigEngine.resolveLocalIpv4Address()
+                delay(12_000L)
+                elapsedSec += 12
+                val targetAddr = remoteHostAddress
+                val currentIp = if (targetAddr != null) {
+                    SipAutoConfigEngine.resolveLocalIpv4ForRemote(targetAddr, account.port)
+                } else {
+                    SipAutoConfigEngine.resolveLocalIpv4Address()
+                }
                 if (currentIp != localIp && currentIp != "127.0.0.1" && dialogs.isEmpty()) {
                     // Network interface IP switched (e.g. Wi-Fi <-> 4G) — re-register on new IP
                     startAccountRegistration(account)
@@ -424,18 +442,30 @@ class SipClientEngine(
         listenerJob = scope.launch {
             if (account.transport == SipTransport.UDP) {
                 val buf = ByteArray(16384)
+                var consecutiveErrors = 0
                 while (isActive) {
                     val sock = udpSocket ?: break
+                    if (sock.isClosed) break
                     val packet = DatagramPacket(buf, buf.size)
-                    val ok = runCatching {
+                    try {
                         sock.receive(packet)
-                        true
-                    }.getOrDefault(false)
-                    if (!ok) {
-                        if (isActive && activeAccount?.id == account.id && activeAccount?.isEnabled == true) {
-                            scheduleNetworkReconnect()
+                        consecutiveErrors = 0
+                    } catch (_: java.net.PortUnreachableException) {
+                        // Transient ICMP port-unreachable must never kill the active SIP listener socket
+                        continue
+                    } catch (_: java.net.SocketTimeoutException) {
+                        continue
+                    } catch (_: Throwable) {
+                        if (!isActive || sock.isClosed) break
+                        consecutiveErrors++
+                        if (consecutiveErrors >= 3) {
+                            if (activeAccount?.id == account.id && activeAccount?.isEnabled == true) {
+                                scheduleNetworkReconnect()
+                            }
+                            break
                         }
-                        break
+                        delay(150L)
+                        continue
                     }
                     if (packet.length <= 4) continue // Ignore CRLF keepalive pongs
                     val raw = String(packet.data, 0, packet.length, Charsets.UTF_8)
@@ -515,9 +545,12 @@ class SipClientEngine(
         } else {
             when (msg.method) {
                 "INVITE" -> handleIncomingInvite(msg, callId, account, sourcePeer)
-                "ACK" -> Unit
+                "ACK" -> dialogs[callId]?.ackReceived = true
                 "BYE", "CANCEL" -> handleIncomingTerminate(msg, callId, account, sourcePeer)
-                "OPTIONS", "NOTIFY" -> {
+                "OPTIONS", "NOTIFY", "UPDATE" -> {
+                    if (msg.method == "UPDATE") {
+                        SipMessageCodec.parseSdp(msg.body)?.let { dialogs[callId]?.remoteSdp = it }
+                    }
                     val ok = SipMessageCodec.buildResponse(
                         200, "OK", msg, effectiveContactIp(), effectiveContactPort(),
                         account.username, account.transport, SipMessageCodec.newTag()
@@ -556,6 +589,7 @@ class SipClientEngine(
     ) {
         when (msg.statusCode) {
             in 200..299 -> {
+                registerAuthAttempts = 0
                 SipMessageCodec.extractContactExpiresSec(msg)?.let { exp ->
                     registeredExpiresSec = exp
                 }
@@ -574,6 +608,15 @@ class SipClientEngine(
                 )
             }
             401, 407 -> {
+                registerAuthAttempts += 1
+                if (registerAuthAttempts > 2) {
+                    sipAccountRepository.updateRegistrationStatus(
+                        account.id,
+                        SipRegistrationStatus.ERROR,
+                        "SIP auth rejected (${msg.statusCode})"
+                    )
+                    return
+                }
                 val challenge = SipMessageCodec.parseChallenge(msg) ?: return
                 val password = activePassword ?: return
                 val auth = SipMessageCodec.buildDigestAuthorizationHeader(
@@ -616,6 +659,10 @@ class SipClientEngine(
         sourcePeer: PeerEndpoint?
     ) {
         val dialog = dialogs[callId] ?: return
+        val respCseq = msg.firstHeader("CSeq")?.trim()?.substringBefore(' ')?.toIntOrNull()
+        if (respCseq != null && respCseq != dialog.cseq) {
+            return
+        }
         dialog.gotResponse = true
         if (sourcePeer != null) {
             dialog.peerEndpoint = sourcePeer
@@ -624,6 +671,8 @@ class SipClientEngine(
         when (msg.statusCode) {
             100 -> Unit
             180, 183 -> {
+                dialog.gotEarlyRinging = true
+                SipMessageCodec.parseSdp(msg.body)?.let { dialog.remoteSdp = it }
                 _signalingEvents.emit(SipSignalingEvent.OutgoingRinging(callId))
             }
             401, 407 -> {
@@ -644,16 +693,30 @@ class SipClientEngine(
 
                 dialog.authAttempts += 1
                 if (dialog.authAttempts > 2) {
+                    val beforeRing = !dialog.gotEarlyRinging
                     dialogs.remove(callId)
                     _signalingEvents.emit(
-                        SipSignalingEvent.CallFailed(callId, "SIP authentication rejected (${msg.statusCode})")
+                        SipSignalingEvent.CallFailed(
+                            callId = callId,
+                            reason = "SIP authentication rejected (${msg.statusCode})",
+                            statusCode = msg.statusCode,
+                            beforeEarlyRinging = beforeRing
+                        )
                     )
                     return
                 }
 
                 val challenge = SipMessageCodec.parseChallenge(msg) ?: run {
+                    val beforeRing = !dialog.gotEarlyRinging
                     dialogs.remove(callId)
-                    _signalingEvents.emit(SipSignalingEvent.CallFailed(callId, "Missing SIP auth challenge"))
+                    _signalingEvents.emit(
+                        SipSignalingEvent.CallFailed(
+                            callId = callId,
+                            reason = "Missing SIP auth challenge",
+                            statusCode = msg.statusCode,
+                            beforeEarlyRinging = beforeRing
+                        )
+                    )
                     return
                 }
                 val password = activePassword ?: return
@@ -719,10 +782,11 @@ class SipClientEngine(
                 )
                 sendRaw(ack, account, dialog.peerEndpoint)
                 if (!alreadyConfirmed) {
-                    _signalingEvents.emit(SipSignalingEvent.CallConnected(callId, remoteSdp))
+                    _signalingEvents.emit(SipSignalingEvent.CallConnected(callId, remoteSdp ?: dialog.remoteSdp))
                 }
             }
             in 400..699 -> {
+                val beforeRing = !dialog.gotEarlyRinging
                 val respTo = msg.firstHeader("To") ?: dialog.toHeader
                 val ack = SipMessageCodec.buildAckRequest(
                     targetUri = dialog.targetUri,
@@ -738,7 +802,12 @@ class SipClientEngine(
                 sendRaw(ack, account, dialog.peerEndpoint)
                 dialogs.remove(callId)
                 _signalingEvents.emit(
-                    SipSignalingEvent.CallFailed(callId, "SIP ${msg.statusCode} ${msg.reasonPhrase}")
+                    SipSignalingEvent.CallFailed(
+                        callId = callId,
+                        reason = "SIP ${msg.statusCode} ${msg.reasonPhrase}",
+                        statusCode = msg.statusCode,
+                        beforeEarlyRinging = beforeRing
+                    )
                 )
             }
         }
@@ -754,11 +823,22 @@ class SipClientEngine(
         if (existingDialog != null) {
             if (sourcePeer != null) existingDialog.peerEndpoint = sourcePeer
             val toTag = existingDialog.fromHeader.substringAfter("tag=", SipMessageCodec.newTag())
-            val ringing = SipMessageCodec.buildResponse(
-                180, "Ringing", msg, effectiveContactIp(), effectiveContactPort(),
-                account.username, account.transport, toTag
-            )
-            sendRaw(ringing, account, existingDialog.peerEndpoint)
+            if (existingDialog.isConfirmed) {
+                SipMessageCodec.parseSdp(msg.body)?.let { existingDialog.remoteSdp = it }
+                val sdp = SipMessageCodec.buildSdpOffer(localIp, existingDialog.localRtpPort, existingDialog.preferWideband)
+                val ok = SipMessageCodec.buildResponse(
+                    200, "OK", msg, effectiveContactIp(), effectiveContactPort(),
+                    account.username, account.transport, toTag,
+                    body = sdp, contentType = "application/sdp"
+                )
+                sendRaw(ok, account, existingDialog.peerEndpoint)
+            } else {
+                val ringing = SipMessageCodec.buildResponse(
+                    180, "Ringing", msg, effectiveContactIp(), effectiveContactPort(),
+                    account.username, account.transport, toTag
+                )
+                sendRaw(ringing, account, existingDialog.peerEndpoint)
+            }
             return
         }
 
@@ -770,7 +850,11 @@ class SipClientEngine(
         sendRaw(trying, account, sourcePeer)
 
         val fromHeader = msg.firstHeader("From").orEmpty()
-        val displayName = fromHeader.substringBefore('<').replace("\"", "").trim()
+        val displayName = if (fromHeader.contains('<')) {
+            fromHeader.substringBefore('<').replace("\"", "").trim()
+        } else {
+            ""
+        }
         val extractedFromUri = SipMessageCodec.extractSipUri(fromHeader).removePrefix("sip:")
         val fromUri = extractedFromUri.ifBlank { fromHeader.removePrefix("sip:") }
         val remoteSdp = SipMessageCodec.parseSdp(msg.body)
@@ -781,8 +865,13 @@ class SipClientEngine(
         )
         sendRaw(ringing, account, sourcePeer)
 
-        val rawTo = msg.firstHeader("To").orEmpty()
-        val localFromHeader = if (rawTo.contains("tag=", ignoreCase = true)) rawTo else "$rawTo;tag=$toTag"
+        val rawTo = msg.firstHeader("To").orEmpty().trim()
+        val bracketedTo = if (rawTo.isNotBlank() && !rawTo.contains('<') && !rawTo.contains("tag=", ignoreCase = true)) {
+            "<${rawTo.substringBefore(';')}>${if (rawTo.contains(';')) ";${rawTo.substringAfter(';')}" else ""}"
+        } else {
+            rawTo
+        }
+        val localFromHeader = if (bracketedTo.contains("tag=", ignoreCase = true)) bracketedTo else "$bracketedTo;tag=$toTag"
         val remoteContact = msg.firstHeader("Contact")
             ?.let { SipMessageCodec.extractSipUri(it) }
             ?.takeIf { it.isNotBlank() }
@@ -857,9 +946,24 @@ class SipClientEngine(
             activeAccount = account
             activePassword = password
 
+            val resolvedAddr = remoteHostAddress ?: runCatching {
+                val proxyHost = account.effectiveProxyHost()
+                InetAddress.getAllByName(proxyHost)
+                    .firstOrNull { it is Inet4Address }
+                    ?: InetAddress.getByName(proxyHost)
+            }.getOrNull()
+            if (resolvedAddr != null) {
+                remoteHostAddress = resolvedAddr
+                localIp = SipAutoConfigEngine.resolveLocalIpv4ForRemote(resolvedAddr, account.port)
+            }
+
             if (!isActiveSocketOpen(account.transport)) {
-                localIp = SipAutoConfigEngine.resolveLocalIpv4Address()
-                if (!openTransportSocket(account)) return@withContext false
+                if (resolvedAddr != null) {
+                    localIp = SipAutoConfigEngine.resolveLocalIpv4ForRemote(resolvedAddr, account.port)
+                } else {
+                    localIp = SipAutoConfigEngine.resolveLocalIpv4Address()
+                }
+                if (!openTransportSocket(account, resolvedAddr)) return@withContext false
                 startIncomingReader(account)
             }
         }
@@ -910,8 +1014,18 @@ class SipClientEngine(
             // Recover stale/closed UDP or TCP/TLS socket and retry once
             val recovered = transportMutex.withLock {
                 stopTransportLocked()
-                localIp = SipAutoConfigEngine.resolveLocalIpv4Address()
-                if (openTransportSocket(account)) {
+                val resolvedAddr = runCatching {
+                    val proxyHost = account.effectiveProxyHost()
+                    InetAddress.getAllByName(proxyHost)
+                        .firstOrNull { it is Inet4Address }
+                        ?: InetAddress.getByName(proxyHost)
+                }.getOrNull()
+                localIp = if (resolvedAddr != null) {
+                    SipAutoConfigEngine.resolveLocalIpv4ForRemote(resolvedAddr, account.port)
+                } else {
+                    SipAutoConfigEngine.resolveLocalIpv4Address()
+                }
+                if (openTransportSocket(account, resolvedAddr)) {
                     startIncomingReader(account)
                     true
                 } else {
@@ -978,6 +1092,7 @@ class SipClientEngine(
         val req = dialog.lastInviteRequest ?: return@withContext null
         dialog.localRtpPort = localRtpPort
         dialog.isConfirmed = true
+        dialog.ackReceived = false
         val sdp = SipMessageCodec.buildSdpOffer(localIp, localRtpPort, preferWideband)
         val ok = SipMessageCodec.buildResponse(
             statusCode = 200,
@@ -992,6 +1107,16 @@ class SipClientEngine(
             contentType = "application/sdp"
         )
         sendRaw(ok, dialog.account, dialog.peerEndpoint)
+        if (dialog.account.transport == SipTransport.UDP) {
+            scope.launch {
+                for (waitMs in listOf(500L, 1000L, 1500L)) {
+                    delay(waitMs)
+                    val active = dialogs[callId] ?: break
+                    if (active.ackReceived) break
+                    sendRaw(ok, active.account, active.peerEndpoint)
+                }
+            }
+        }
         dialog.remoteSdp
     }
 
@@ -1163,6 +1288,25 @@ class SipClientEngine(
     }
 
     companion object {
+        /**
+         * Builds normalized dial fallback variants when an upstream SIP proxy/SBC rejects an E.164 '+'
+         * formatted contact number before ringing (e.g., Bangladeshi IPTSPs expecting '01...' or '8801...').
+         */
+        fun buildDialFallbacks(destination: String): List<String> {
+            val clean = destination.trim().removePrefix("sip:")
+            if (clean.contains("@")) return emptyList()
+            val bdMatch = Regex("""^\+?880(1[3-9]\d{8})$""").matchEntire(clean)
+            if (bdMatch != null) {
+                val subscriber = bdMatch.groupValues[1]
+                return listOf("0$subscriber", "880$subscriber").filter { it != clean }
+            }
+            if (clean.startsWith("+")) {
+                val withoutPlus = clean.removePrefix("+")
+                if (withoutPlus.isNotBlank()) return listOf(withoutPlus)
+            }
+            return emptyList()
+        }
+
         /**
          * Validates SIP account proxy host, port, transport protocol, and destination syntax
          * synchronously before attempting network resolution or entering DIALING state.

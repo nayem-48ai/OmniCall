@@ -20,7 +20,9 @@ data class SipRawMessage(
     }
 
     fun headerValues(name: String): List<String> {
-        return headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value ?: emptyList()
+        return headers.entries
+            .filter { it.key.equals(name, ignoreCase = true) }
+            .flatMap { it.value }
     }
 }
 
@@ -269,12 +271,17 @@ object SipMessageCodec {
         contentType: String? = null
     ): String {
         val bodyBytes = body.toByteArray(Charsets.UTF_8)
-        val rawTo = request.firstHeader("To").orEmpty()
+        val rawTo = request.firstHeader("To").orEmpty().trim()
+        val normalizedTo = if (rawTo.isNotBlank() && !rawTo.contains('<') && !rawTo.contains("tag=", ignoreCase = true)) {
+            "<${rawTo.substringBefore(';')}>${if (rawTo.contains(';')) ";${rawTo.substringAfter(';')}" else ""}"
+        } else {
+            rawTo
+        }
         val toWithTag = when {
             statusCode == 100 -> rawTo
-            rawTo.contains("tag=", ignoreCase = true) -> rawTo
-            toTag.isBlank() -> rawTo
-            else -> "$rawTo;tag=$toTag"
+            normalizedTo.contains("tag=", ignoreCase = true) -> normalizedTo
+            toTag.isBlank() -> normalizedTo
+            else -> "$normalizedTo;tag=$toTag"
         }
         return buildString {
             append("SIP/2.0 $statusCode $reasonPhrase$CRLF")

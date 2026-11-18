@@ -30,6 +30,7 @@ import com.example.domain.model.ResolvedOutgoingRoute
 import com.example.domain.model.SipAccountModel
 import com.example.sip.SdpMediaSpec
 import com.example.sip.SipClientEngine
+import com.example.sip.SipMessageCodec
 import com.example.sip.SipSignalingEvent
 import com.example.sip.SipTransportValidationResult
 import com.example.ui.call.IncomingCallActivity
@@ -102,6 +103,8 @@ class ActiveCallCoordinator(
     private var activeCallDirection: CallDirection = CallDirection.OUTGOING
     private var currentCallLogged: Boolean = false
     private var autoRecordingTriggeredForCallId: String? = null
+    private var pendingSipFallbackQueue: ArrayDeque<String> = ArrayDeque()
+    private var activeSipFallbackAccount: SipAccountModel? = null
     @Volatile
     private var lastExplicitAudioSelectMs: Long = 0L
 
@@ -128,6 +131,8 @@ class ActiveCallCoordinator(
                 when (event) {
                     is SipSignalingEvent.OutgoingRinging -> {
                         if (_activeCall.value.callId == event.callId) {
+                            pendingSipFallbackQueue.clear()
+                            activeSipFallbackAccount = null
                             _activeCall.update {
                                 it.copy(
                                     lifecycle = CallLifecycleState.RINGING_OUTGOING,
@@ -138,6 +143,8 @@ class ActiveCallCoordinator(
                     }
                     is SipSignalingEvent.CallConnected -> {
                         if (_activeCall.value.callId == event.callId) {
+                            pendingSipFallbackQueue.clear()
+                            activeSipFallbackAccount = null
                             onSipMediaConnected(event.remoteSdp)
                         }
                     }
@@ -146,16 +153,63 @@ class ActiveCallCoordinator(
                     }
                     is SipSignalingEvent.RemoteTerminated -> {
                         if (_activeCall.value.callId == event.callId) {
+                            pendingSipFallbackQueue.clear()
+                            activeSipFallbackAccount = null
                             finalizeAndClearCall("Call ended by remote party")
                         }
                     }
                     is SipSignalingEvent.CallFailed -> {
                         if (_activeCall.value.callId == event.callId) {
-                            _callErrorEvents.tryEmit(event.reason)
-                            finalizeAndClearCall(event.reason)
+                            val fallbackAccount = activeSipFallbackAccount
+                            val shouldFallback = event.beforeEarlyRinging &&
+                                event.statusCode in RETRYABLE_PRE_RING_CODES &&
+                                pendingSipFallbackQueue.isNotEmpty() &&
+                                fallbackAccount != null
+                            if (shouldFallback && fallbackAccount != null) {
+                                val nextDestination = pendingSipFallbackQueue.removeFirst()
+                                retryOutgoingSipFallback(fallbackAccount, nextDestination)
+                            } else {
+                                pendingSipFallbackQueue.clear()
+                                activeSipFallbackAccount = null
+                                _callErrorEvents.tryEmit(event.reason)
+                                finalizeAndClearCall(event.reason)
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun retryOutgoingSipFallback(account: SipAccountModel, nextDestination: String) {
+        val nextCallId = SipMessageCodec.newCallId(account.domain)
+        val previousDisplay = _activeCall.value.displayName
+        _activeCall.update {
+            it.copy(
+                callId = nextCallId,
+                remoteHandle = nextDestination,
+                displayName = previousDisplay.ifBlank { nextDestination },
+                lifecycle = CallLifecycleState.DIALING,
+                statusMessage = "Dialing ($nextDestination)..."
+            )
+        }
+        scope.launch {
+            val prefs = prefsRepository.settingsFlow.first()
+            val sent = sipClientEngine.placeOutgoingInvite(
+                callId = nextCallId,
+                destination = nextDestination,
+                account = account,
+                localRtpPort = localRtpPort,
+                preferWideband = prefs.preferWidebandCodecs
+            )
+            if (!sent) {
+                pendingSipFallbackQueue.clear()
+                activeSipFallbackAccount = null
+                val detail = sipClientEngine.getLastTransportError()?.let { " ($it)" }.orEmpty()
+                _callErrorEvents.emit(
+                    "Unable to send SIP INVITE to ${account.effectiveProxyHost()}:${account.port}$detail"
+                )
+                finalizeAndClearCall("Unable to reach SIP server ${account.effectiveProxyHost()}")
             }
         }
     }
@@ -222,6 +276,8 @@ class ActiveCallCoordinator(
                     trimmed.replace(Regex("[\\s()\\-]+"), "")
                 }
                 clearAllVoipConnections()
+                pendingSipFallbackQueue.clear()
+                activeSipFallbackAccount = null
 
                 scope.launch {
                     // Validate SIP proxy & UDP/TCP/TLS transport settings BEFORE transitioning to DIALING
@@ -234,7 +290,9 @@ class ActiveCallCoordinator(
                             activeSipAccount = account
                             activeCallDirection = CallDirection.OUTGOING
                             currentCallLogged = false
-                            val callId = "sip_${UUID.randomUUID().toString().take(12)}"
+                            pendingSipFallbackQueue = ArrayDeque(SipClientEngine.buildDialFallbacks(sipDestination))
+                            activeSipFallbackAccount = account
+                            val callId = SipMessageCodec.newCallId(account.domain)
                             localRtpPort = rtpAudioEngine.allocateLocalRtpPort()
 
                             _activeCall.value = ActiveCallState(
@@ -270,6 +328,8 @@ class ActiveCallCoordinator(
                                 preferWideband = prefs.preferWidebandCodecs
                             )
                             if (!sent) {
+                                pendingSipFallbackQueue.clear()
+                                activeSipFallbackAccount = null
                                 val detail = sipClientEngine.getLastTransportError()?.let { " ($it)" }.orEmpty()
                                 _callErrorEvents.emit(
                                     "Unable to send SIP INVITE to ${account.effectiveProxyHost()}:${validation.port}$detail"
@@ -418,6 +478,8 @@ class ActiveCallCoordinator(
             return
         }
         activeCallDirection = CallDirection.MISSED
+        pendingSipFallbackQueue.clear()
+        activeSipFallbackAccount = null
         scope.launch {
             sipClientEngine.terminateCall(current.callId)
             finalizeAndClearCall("Call declined")
@@ -748,6 +810,8 @@ class ActiveCallCoordinator(
             return
         }
 
+        pendingSipFallbackQueue.clear()
+        activeSipFallbackAccount = null
         scope.launch {
             sipClientEngine.terminateCall(current.callId)
             finalizeAndClearCall("Call ended")
@@ -924,9 +988,12 @@ class ActiveCallCoordinator(
         _activeCall.value = ActiveCallState()
         _elapsedSeconds.value = 0
         autoRecordingTriggeredForCallId = null
+        pendingSipFallbackQueue.clear()
+        activeSipFallbackAccount = null
     }
 
     companion object {
+        private val RETRYABLE_PRE_RING_CODES = setOf(404, 484, 486, 488, 502, 503, 603)
         private val voipConnections = ConcurrentHashMap<String, WeakReference<VoipConnectionService.OmniVoipConnection>>()
         private var nativeInCallServiceRef: WeakReference<OmniCallInCallService>? = null
         private var nativeInCallRef: WeakReference<Call>? = null
