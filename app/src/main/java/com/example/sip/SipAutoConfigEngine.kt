@@ -335,10 +335,18 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
     companion object {
         fun resolveLocalIpv4Address(): String {
             return runCatching {
-                NetworkInterface.getNetworkInterfaces().toList()
-                    .filter { it.isUp && !it.isLoopback }
-                    .flatMap { it.inetAddresses.toList() }
-                    .firstOrNull { it is Inet4Address && !it.isLoopbackAddress }
+                val ifaces = NetworkInterface.getNetworkInterfaces().toList()
+                    .filter { it.isUp && !it.isLoopback && !it.name.startsWith("dummy", ignoreCase = true) }
+                    .sortedByDescending {
+                        when {
+                            it.name.startsWith("wlan") || it.name.startsWith("rmnet") -> 2
+                            else -> 1
+                        }
+                    }
+                ifaces.flatMap { it.inetAddresses.toList() }
+                    .firstOrNull {
+                        it is Inet4Address && !it.isLoopbackAddress && !it.isLinkLocalAddress
+                    }
                     ?.hostAddress ?: "127.0.0.1"
             }.getOrDefault("127.0.0.1")
         }

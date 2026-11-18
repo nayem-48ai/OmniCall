@@ -210,4 +210,28 @@ class SipAndRoutingUnitTest {
         assertEquals("call-in-99@icctalk.com", parsed.firstHeader("Call-ID"))
         assertTrue(parsed.firstHeader("From").orEmpty().contains("01712345678@icctalk.com"))
     }
+
+    @Test
+    fun sipInvite_keepsLocalViaAndUsesNatMappedContact() {
+        val sdp = SipMessageCodec.buildSdpOffer("10.0.0.15", 40002, preferWideband = true)
+        val invite = SipMessageCodec.buildInviteRequest(
+            targetUri = "sip:01782961419@icctalk.com",
+            domain = "icctalk.com",
+            username = "09639170537",
+            displayName = "ICC Communication",
+            localIp = "10.0.0.15",
+            localSipPort = 45120,
+            transport = SipTransport.UDP,
+            callId = "inv-1@icctalk.com",
+            cseq = 12,
+            fromTag = "ftag2",
+            branch = "z9hG4bK-inv",
+            sdpBody = sdp,
+            contactIp = "103.45.67.89",
+            contactPort = 61234
+        )
+        assertTrue(invite.contains("Via: SIP/2.0/UDP 10.0.0.15:45120;rport;branch=z9hG4bK-inv"))
+        assertTrue(invite.contains("Contact: <sip:09639170537@103.45.67.89:61234;transport=udp>"))
+        assertTrue(invite.contains("c=IN IP4 10.0.0.15"))
+    }
 }

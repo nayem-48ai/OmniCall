@@ -133,7 +133,9 @@ object SipMessageCodec {
         fromTag: String,
         branch: String,
         sdpBody: String,
-        authHeader: Pair<String, String>? = null
+        authHeader: Pair<String, String>? = null,
+        contactIp: String = localIp,
+        contactPort: Int = localSipPort
     ): String {
         val transportUpper = transport.label
         val bodyBytes = sdpBody.toByteArray(Charsets.UTF_8)
@@ -146,7 +148,7 @@ object SipMessageCodec {
             append("To: <$targetUri>$CRLF")
             append("Call-ID: $callId$CRLF")
             append("CSeq: $cseq INVITE$CRLF")
-            append("Contact: <sip:$username@$localIp:$localSipPort;transport=${transportUpper.lowercase()}>$CRLF")
+            append("Contact: <sip:$username@$contactIp:$contactPort;transport=${transportUpper.lowercase()}>$CRLF")
             append("Supported: replaces, timer$CRLF")
             append("Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO$CRLF")
             append("User-Agent: $USER_AGENT$CRLF")

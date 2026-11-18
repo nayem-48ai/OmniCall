@@ -22,6 +22,10 @@ class VoipConnectionService : ConnectionService() {
     ): Connection {
         val extras = request?.extras
         val callId = extras?.getString(TelecomCallManager.EXTRA_OMNICALL_CALL_ID) ?: ""
+        val coordinator = (applicationContext as? OmniCallApplication)?.container?.activeCallCoordinator
+        if (callId.isBlank() || coordinator?.isCallIdActive(callId) != true) {
+            return Connection.createCanceledConnection()
+        }
         return OmniVoipConnection(callId, isIncoming = false).apply {
             setAddress(request?.address, android.telecom.TelecomManager.PRESENTATION_ALLOWED)
             setDialing()
@@ -34,6 +38,10 @@ class VoipConnectionService : ConnectionService() {
     ): Connection {
         val extras = request?.extras
         val callId = extras?.getString(TelecomCallManager.EXTRA_OMNICALL_CALL_ID) ?: ""
+        val coordinator = (applicationContext as? OmniCallApplication)?.container?.activeCallCoordinator
+        if (callId.isBlank() || coordinator?.isCallIdActive(callId) != true) {
+            return Connection.createCanceledConnection()
+        }
         val displayName = extras?.getString(TelecomCallManager.EXTRA_CALLER_DISPLAY_NAME).orEmpty()
         return OmniVoipConnection(callId, isIncoming = true).apply {
             setAddress(request?.address, android.telecom.TelecomManager.PRESENTATION_ALLOWED)
@@ -60,39 +68,56 @@ class VoipConnectionService : ConnectionService() {
 
         override fun onAnswer() {
             setActive()
-            coordinator()?.answerIncomingCall()
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.answerIncomingCall()
+            }
         }
 
         override fun onReject() {
             setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
             destroy()
-            coordinator()?.declineIncomingCall()
+            ActiveCallCoordinator.unregisterVoipConnection(callId)
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.declineIncomingCall()
+            }
         }
 
         override fun onDisconnect() {
             setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
             destroy()
-            coordinator()?.endActiveCall()
+            ActiveCallCoordinator.unregisterVoipConnection(callId)
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.endActiveCall()
+            }
         }
 
         override fun onAbort() {
             setDisconnected(DisconnectCause(DisconnectCause.CANCELED))
             destroy()
-            coordinator()?.endActiveCall()
+            ActiveCallCoordinator.unregisterVoipConnection(callId)
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.endActiveCall()
+            }
         }
 
         override fun onHold() {
             setOnHold()
-            coordinator()?.setHold(true)
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.setHold(true)
+            }
         }
 
         override fun onUnhold() {
             setActive()
-            coordinator()?.setHold(false)
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.setHold(false)
+            }
         }
 
         override fun onPlayDtmfTone(c: Char) {
-            coordinator()?.sendDtmf(c)
+            if (coordinator()?.isCallIdActive(callId) == true) {
+                coordinator()?.sendDtmf(c)
+            }
         }
 
         @Suppress("DEPRECATION")

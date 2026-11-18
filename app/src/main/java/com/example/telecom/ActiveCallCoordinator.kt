@@ -48,6 +48,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.lang.ref.WeakReference
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -151,12 +152,21 @@ class ActiveCallCoordinator(
         }
     }
 
+    fun isCallIdActive(callId: String): Boolean {
+        if (callId.isBlank()) return false
+        val current = _activeCall.value
+        return current.callId == callId &&
+            current.lifecycle != CallLifecycleState.IDLE &&
+            current.lifecycle != CallLifecycleState.ENDED
+    }
+
     fun placeCall(destination: String, route: ResolvedOutgoingRoute) {
         val trimmed = destination.trim()
         if (trimmed.isBlank()) return
 
         when (route) {
             is ResolvedOutgoingRoute.CellularSim -> {
+                clearAllVoipConnections()
                 val sourceType = if (route.sim.slotIndex == 0) CallSourceType.SIM_1 else CallSourceType.SIM_2
                 activeCallDirection = CallDirection.OUTGOING
                 currentCallLogged = false
@@ -228,8 +238,10 @@ class ActiveCallCoordinator(
                     isRecording = false
                 )
 
-                val targetSipUri = if (trimmed.contains("@")) "sip:$trimmed" else "sip:$trimmed@${account.domain}"
-                telecomCallManager.notifyTelecomOutgoingSipCall(targetSipUri, account, callId)
+                // Outgoing SIP calls are managed directly by OmniCall + VoipCallForegroundService
+                // so Android/OEM Telecom does not trap stale self-managed connections or show
+                // "Placing this call will end your OmniCall call." dialogs.
+                clearAllVoipConnections()
 
                 scope.launch {
                     val prefs = prefsRepository.settingsFlow.first()
@@ -391,7 +403,7 @@ class ActiveCallCoordinator(
                 statusMessage = "Connected • Hi-Fi Audio"
             )
         }
-        voipConnectionRef?.get()?.setActive()
+        voipConnections[current.callId]?.get()?.setActive()
 
         scope.launch {
             val prefs = prefsRepository.settingsFlow.first()
@@ -849,11 +861,7 @@ class ActiveCallCoordinator(
         notificationManager.cancelIncomingNotification()
         VoipCallForegroundService.stop(context)
 
-        voipConnectionRef?.get()?.apply {
-            setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
-            destroy()
-        }
-        voipConnectionRef = null
+        clearAllVoipConnections()
 
         if (finished.remoteHandle.isNotBlank() && !currentCallLogged) {
             currentCallLogged = true
@@ -886,12 +894,28 @@ class ActiveCallCoordinator(
     }
 
     companion object {
-        private var voipConnectionRef: WeakReference<VoipConnectionService.OmniVoipConnection>? = null
+        private val voipConnections = ConcurrentHashMap<String, WeakReference<VoipConnectionService.OmniVoipConnection>>()
         private var nativeInCallServiceRef: WeakReference<OmniCallInCallService>? = null
         private var nativeInCallRef: WeakReference<Call>? = null
 
         fun registerVoipConnection(callId: String, connection: VoipConnectionService.OmniVoipConnection) {
-            voipConnectionRef = WeakReference(connection)
+            if (callId.isNotBlank()) {
+                voipConnections[callId] = WeakReference(connection)
+            }
+        }
+
+        fun unregisterVoipConnection(callId: String) {
+            voipConnections.remove(callId)
+        }
+
+        fun clearAllVoipConnections() {
+            voipConnections.values.forEach { ref ->
+                ref.get()?.apply {
+                    runCatching { setDisconnected(DisconnectCause(DisconnectCause.LOCAL)) }
+                    runCatching { destroy() }
+                }
+            }
+            voipConnections.clear()
         }
 
         fun bindNativeInCallService(service: OmniCallInCallService, call: Call) {

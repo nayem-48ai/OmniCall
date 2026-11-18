@@ -67,7 +67,14 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
             contacts.forEach { contact ->
                 contact.phoneNumbers.forEach { phone ->
                     val key = BlocklistRepository.normalizeKey(phone.number)
-                    if (key.isNotEmpty()) map[key] = contact
+                    if (key.isNotEmpty()) {
+                        val existing = map[key]
+                        if (existing == null ||
+                            (existing.photoUri.isNullOrBlank() && !contact.photoUri.isNullOrBlank())
+                        ) {
+                            map[key] = contact
+                        }
+                    }
                 }
             }
             _allContacts.value = contacts
