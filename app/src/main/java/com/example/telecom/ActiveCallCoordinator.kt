@@ -270,8 +270,9 @@ class ActiveCallCoordinator(
                                 preferWideband = prefs.preferWidebandCodecs
                             )
                             if (!sent) {
+                                val detail = sipClientEngine.getLastTransportError()?.let { " ($it)" }.orEmpty()
                                 _callErrorEvents.emit(
-                                    "Unable to send SIP INVITE to ${account.effectiveProxyHost()}:${validation.port}"
+                                    "Unable to send SIP INVITE to ${account.effectiveProxyHost()}:${validation.port}$detail"
                                 )
                                 finalizeAndClearCall("Unable to reach SIP server ${account.effectiveProxyHost()}")
                             } else {
@@ -443,14 +444,16 @@ class ActiveCallCoordinator(
                 subtitle = current.routeBadge,
                 isRecording = prefs.autoCallRecording || current.isRecording
             )
-            rtpAudioEngine.startMediaSession(
-                localRtpPort = localRtpPort,
-                remoteSdp = remoteSdp,
-                enableAec = prefs.enableHardwareAec,
-                enableNs = prefs.enableHardwareNs,
-                enableAgc = prefs.enableHardwareAgc,
-                transportLabel = current.routeBadge
-            )
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                rtpAudioEngine.startMediaSession(
+                    localRtpPort = localRtpPort,
+                    remoteSdp = remoteSdp,
+                    enableAec = prefs.enableHardwareAec,
+                    enableNs = prefs.enableHardwareNs,
+                    enableAgc = prefs.enableHardwareAgc,
+                    transportLabel = current.routeBadge
+                )
+            }
             if (prefs.autoCallRecording) {
                 triggerAutoRecordingIfNeeded()
             }

@@ -125,6 +125,7 @@ class SipClientEngine(
     @Volatile private var registerCallId: String = ""
     @Volatile private var registerFromTag: String = ""
     @Volatile private var activeNetworkHandle: Long? = null
+    @Volatile private var lastTransportError: String? = null
 
     private val dialogs = ConcurrentHashMap<String, ActiveSipDialog>()
 
@@ -529,7 +530,7 @@ class SipClientEngine(
 
     private fun updateMappedAddressFromVia(msg: SipRawMessage): Boolean {
         val via = msg.firstHeader("Via") ?: return false
-        val receivedIp = Regex("""received=([^;\s]+)""", RegexOption.IGNORE_CASE)
+        val receivedIp = Regex("""received=([^;\s,]+)""", RegexOption.IGNORE_CASE)
             .find(via)?.groupValues?.getOrNull(1)
         val rport = Regex("""rport=(\d+)""", RegexOption.IGNORE_CASE)
             .find(via)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -691,6 +692,7 @@ class SipClientEngine(
                 launchUdpInviteRetransmits(callId, nextCseq, invite, account, dialog.peerEndpoint)
             }
             in 200..299 -> {
+                val alreadyConfirmed = dialog.isConfirmed
                 dialog.isConfirmed = true
                 val toHeader = msg.firstHeader("To") ?: dialog.toHeader
                 dialog.toHeader = toHeader
@@ -700,7 +702,9 @@ class SipClientEngine(
                 dialog.remoteTargetUri = contactUri
                 dialog.routeSet = msg.headerValues("Record-Route").reversed()
                 val remoteSdp = SipMessageCodec.parseSdp(msg.body)
-                dialog.remoteSdp = remoteSdp
+                if (remoteSdp != null) {
+                    dialog.remoteSdp = remoteSdp
+                }
 
                 val ack = SipMessageCodec.buildAckRequest(
                     targetUri = contactUri,
@@ -714,7 +718,9 @@ class SipClientEngine(
                     routeSet = dialog.routeSet
                 )
                 sendRaw(ack, account, dialog.peerEndpoint)
-                _signalingEvents.emit(SipSignalingEvent.CallConnected(callId, remoteSdp))
+                if (!alreadyConfirmed) {
+                    _signalingEvents.emit(SipSignalingEvent.CallConnected(callId, remoteSdp))
+                }
             }
             in 400..699 -> {
                 val respTo = msg.firstHeader("To") ?: dialog.toHeader
@@ -844,8 +850,8 @@ class SipClientEngine(
         account: SipAccountModel,
         localRtpPort: Int,
         preferWideband: Boolean
-    ): Boolean {
-        val password = sipAccountRepository.getPassword(account.id) ?: return false
+    ): Boolean = withContext(Dispatchers.IO) {
+        val password = sipAccountRepository.getPassword(account.id) ?: return@withContext false
 
         transportMutex.withLock {
             activeAccount = account
@@ -853,7 +859,7 @@ class SipClientEngine(
 
             if (!isActiveSocketOpen(account.transport)) {
                 localIp = SipAutoConfigEngine.resolveLocalIpv4Address()
-                if (!openTransportSocket(account)) return false
+                if (!openTransportSocket(account)) return@withContext false
                 startIncomingReader(account)
             }
         }
@@ -899,14 +905,49 @@ class SipClientEngine(
             contactIp = effectiveContactIp(),
             contactPort = effectiveContactPort()
         )
-        val sent = sendRaw(invite, account)
+        var sent = sendRaw(invite, account)
         if (!sent) {
+            // Recover stale/closed UDP or TCP/TLS socket and retry once
+            val recovered = transportMutex.withLock {
+                stopTransportLocked()
+                localIp = SipAutoConfigEngine.resolveLocalIpv4Address()
+                if (openTransportSocket(account)) {
+                    startIncomingReader(account)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (recovered) {
+                val retrySdp = SipMessageCodec.buildSdpOffer(localIp, localRtpPort, preferWideband)
+                val retryInvite = SipMessageCodec.buildInviteRequest(
+                    targetUri = targetUri,
+                    domain = account.domain,
+                    username = account.username,
+                    displayName = account.displayName,
+                    localIp = localIp,
+                    localSipPort = localPort,
+                    transport = account.transport,
+                    callId = callId,
+                    cseq = cseq,
+                    fromTag = fromTag,
+                    branch = branch,
+                    sdpBody = retrySdp,
+                    contactIp = effectiveContactIp(),
+                    contactPort = effectiveContactPort()
+                )
+                sent = sendRaw(retryInvite, account)
+                if (sent) {
+                    launchUdpInviteRetransmits(callId, cseq, retryInvite, account, null)
+                    return@withContext true
+                }
+            }
             dialogs.remove(callId)
-            return false
+            return@withContext false
         }
 
         launchUdpInviteRetransmits(callId, cseq, invite, account, null)
-        return true
+        true
     }
 
     private fun launchUdpInviteRetransmits(
@@ -928,9 +969,13 @@ class SipClientEngine(
         }
     }
 
-    suspend fun answerIncomingInvite(callId: String, localRtpPort: Int, preferWideband: Boolean): SdpMediaSpec? {
-        val dialog = dialogs[callId] ?: return null
-        val req = dialog.lastInviteRequest ?: return null
+    suspend fun answerIncomingInvite(
+        callId: String,
+        localRtpPort: Int,
+        preferWideband: Boolean
+    ): SdpMediaSpec? = withContext(Dispatchers.IO) {
+        val dialog = dialogs[callId] ?: return@withContext null
+        val req = dialog.lastInviteRequest ?: return@withContext null
         dialog.localRtpPort = localRtpPort
         dialog.isConfirmed = true
         val sdp = SipMessageCodec.buildSdpOffer(localIp, localRtpPort, preferWideband)
@@ -947,11 +992,11 @@ class SipClientEngine(
             contentType = "application/sdp"
         )
         sendRaw(ok, dialog.account, dialog.peerEndpoint)
-        return dialog.remoteSdp
+        dialog.remoteSdp
     }
 
-    suspend fun setHold(callId: String, hold: Boolean) {
-        val dialog = dialogs[callId] ?: return
+    suspend fun setHold(callId: String, hold: Boolean) = withContext(Dispatchers.IO) {
+        val dialog = dialogs[callId] ?: return@withContext
         val direction = if (hold) "sendonly" else "sendrecv"
         val sdp = SipMessageCodec.buildSdpOffer(localIp, dialog.localRtpPort, dialog.preferWideband, direction = direction)
         val nextCseq = cseqCounter.incrementAndGet()
@@ -971,10 +1016,11 @@ class SipClientEngine(
             routeSet = dialog.routeSet
         )
         sendRaw(reInvite, dialog.account, dialog.peerEndpoint)
+        Unit
     }
 
-    suspend fun sendDtmfInfo(callId: String, digit: Char) {
-        val dialog = dialogs[callId] ?: return
+    suspend fun sendDtmfInfo(callId: String, digit: Char) = withContext(Dispatchers.IO) {
+        val dialog = dialogs[callId] ?: return@withContext
         val body = "Signal=$digit\r\nDuration=160\r\n"
         val info = SipMessageCodec.buildSimpleInDialogRequest(
             method = "INFO",
@@ -994,8 +1040,8 @@ class SipClientEngine(
         eventBus.publish(OmniCallEvent.DtmfDigitReceived(callId, digit))
     }
 
-    suspend fun terminateCall(callId: String) {
-        val dialog = dialogs.remove(callId) ?: return
+    suspend fun terminateCall(callId: String) = withContext(Dispatchers.IO) {
+        val dialog = dialogs.remove(callId) ?: return@withContext
         if (dialog.isOutgoing && !dialog.isConfirmed) {
             // RFC 3261 §9.1: CANCEL MUST carry the exact same Via branch and CSeq number as the INVITE
             val cancel = SipMessageCodec.buildSimpleInDialogRequest(
@@ -1039,6 +1085,7 @@ class SipClientEngine(
             )
             sendRaw(bye, dialog.account, dialog.peerEndpoint)
         }
+        Unit
     }
 
     private fun sendRegister(account: SipAccountModel) {
@@ -1075,7 +1122,7 @@ class SipClientEngine(
         return runCatching {
             when (account.transport) {
                 SipTransport.UDP -> {
-                    val sock = udpSocket ?: return false
+                    val sock = udpSocket ?: error("UDP socket is closed")
                     val targetAddr = peerOverride?.address
                         ?: remoteHostAddress
                         ?: InetAddress.getAllByName(account.effectiveProxyHost())
@@ -1087,14 +1134,20 @@ class SipClientEngine(
                     sock.send(DatagramPacket(bytes, bytes.size, targetAddr, targetPort))
                 }
                 SipTransport.TCP, SipTransport.TLS -> {
-                    val out = tcpSocket?.getOutputStream() ?: return false
+                    val out = tcpSocket?.getOutputStream() ?: error("${account.transport.label} socket is closed")
                     out.write(bytes)
                     out.flush()
                 }
             }
+            lastTransportError = null
             true
-        }.getOrDefault(false)
+        }.getOrElse { err ->
+            lastTransportError = err.message ?: err.javaClass.simpleName
+            false
+        }
     }
+
+    fun getLastTransportError(): String? = lastTransportError
 
     fun stopTransport() {
         stopTransportLocked()

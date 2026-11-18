@@ -174,8 +174,8 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
         val track = runCatching { trackBuilder.build() }.getOrNull()
         audioTrack = track
 
-        val codecName = remoteSdp?.codecName ?: "G722"
-        val payloadType = remoteSdp?.payloadType ?: 9
+        val codecName = remoteSdp?.codecName ?: "PCMU"
+        val payloadType = remoteSdp?.payloadType ?: 0
 
         _telemetry.value = AudioQualityTelemetry(
             codecName = "$codecName • 16kHz HD",
