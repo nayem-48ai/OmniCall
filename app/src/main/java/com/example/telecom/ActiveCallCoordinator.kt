@@ -166,8 +166,12 @@ class ActiveCallCoordinator(
                     is SipSignalingEvent.CallFailed -> {
                         if (_activeCall.value.callId == event.callId) {
                             val fallbackAccount = activeSipFallbackAccount
-                            val shouldFallback = event.beforeEarlyRinging &&
-                                event.statusCode in RETRYABLE_PRE_RING_CODES &&
+                            val outcome = classifySipFailure(
+                                statusCode = event.statusCode,
+                                rawReason = event.reason,
+                                beforeEarlyRinging = event.beforeEarlyRinging
+                            )
+                            val shouldFallback = outcome.isRetryableFormatAmbiguity &&
                                 pendingSipFallbackQueue.isNotEmpty() &&
                                 fallbackAccount != null
                             if (shouldFallback && fallbackAccount != null) {
@@ -176,8 +180,13 @@ class ActiveCallCoordinator(
                             } else {
                                 pendingSipFallbackQueue.clear()
                                 activeSipFallbackAccount = null
-                                _callErrorEvents.tryEmit(event.reason)
-                                finalizeAndClearCall(event.reason)
+                                if (outcome.showErrorBanner) {
+                                    _callErrorEvents.tryEmit(outcome.userMessage)
+                                }
+                                finalizeAndClearCall(
+                                    reason = outcome.userMessage,
+                                    holdStatusMs = if (!outcome.showErrorBanner) 1050L else 200L
+                                )
                             }
                         }
                     }
@@ -415,12 +424,16 @@ class ActiveCallCoordinator(
                     } else current
                 }
                 if (shouldRefreshIncomingNotif) {
-                    notificationManager.showIncomingCallNotification(
-                        callerName = notifName,
-                        callerHandle = notifHandle,
-                        lineBadge = notifBadge,
-                        callerPhotoUri = notifPhotoUri
-                    )
+                    val isCellular = _activeCall.value.sourceType != CallSourceType.SIP
+                    kotlinx.coroutines.withContext(Dispatchers.IO) {
+                        notificationManager.showIncomingCallNotification(
+                            callerName = notifName,
+                            callerHandle = notifHandle,
+                            lineBadge = notifBadge,
+                            callerPhotoUri = notifPhotoUri,
+                            isCellularTelecom = isCellular
+                        )
+                    }
                 }
             }
         }
@@ -482,7 +495,8 @@ class ActiveCallCoordinator(
             callerName = resolvedName,
             callerHandle = event.fromUri,
             lineBadge = badge,
-            callerPhotoUri = info?.photoUri
+            callerPhotoUri = info?.photoUri,
+            isCellularTelecom = false
         )
         runCatching {
             context.startActivity(
@@ -527,7 +541,7 @@ class ActiveCallCoordinator(
         activeSipFallbackAccount = null
         scope.launch {
             sipClientEngine.terminateCall(current.callId)
-            finalizeAndClearCall("Call declined")
+            finalizeAndClearCall("Call declined", holdStatusMs = 0L)
         }
     }
 
@@ -860,8 +874,42 @@ class ActiveCallCoordinator(
         activeSipFallbackAccount = null
         scope.launch {
             sipClientEngine.terminateCall(current.callId)
-            finalizeAndClearCall("Call ended")
+            finalizeAndClearCall("Call ended", holdStatusMs = 0L)
         }
+    }
+
+    /**
+     * Populates a zero-latency provisional ringing state synchronously from cached metadata
+     * before launching [IncomingCallActivity] so there is zero cold-start delay.
+     */
+    fun primeFastIncomingSimCall(
+        remoteHandle: String,
+        displayName: String,
+        accountHandleId: String?
+    ) {
+        val existing = _activeCall.value
+        val cachedSims = simDetector.getCachedSimsNonBlocking()
+        val matchedSim = cachedSims.firstOrNull { it.phoneAccountHandleId == accountHandleId }
+            ?: cachedSims.firstOrNull()
+        val sourceType = if (matchedSim?.slotIndex == 1) CallSourceType.SIM_2 else CallSourceType.SIM_1
+        val routeBadge = matchedSim?.fullLabel ?: sourceType.label
+
+        currentCallLogged = false
+        _isCallUiMinimized.value = false
+        activeCallDirection = CallDirection.INCOMING
+        _activeCall.value = existing.copy(
+            callId = existing.callId.ifBlank { UUID.randomUUID().toString() },
+            remoteHandle = remoteHandle,
+            displayName = displayName.ifBlank { remoteHandle },
+            sourceType = sourceType,
+            routeBadge = routeBadge,
+            lifecycle = CallLifecycleState.RINGING_INCOMING,
+            isIncoming = true,
+            telemetry = existing.telemetry.copy(
+                codecName = "Cellular HD",
+                transportLabel = matchedSim?.shortLabel ?: sourceType.label
+            )
+        )
     }
 
     fun onNativeSimCallUpdated(
@@ -872,9 +920,9 @@ class ActiveCallCoordinator(
         isIncoming: Boolean
     ) {
         val existing = _activeCall.value
-        val sims = simDetector.getCachedSims().ifEmpty { simDetector.detectActiveSims() }
-        val matchedSim = sims.firstOrNull { it.phoneAccountHandleId == accountHandleId }
-            ?: sims.firstOrNull()
+        val nonBlockingSims = simDetector.getCachedSimsNonBlocking()
+        val matchedSim = nonBlockingSims.firstOrNull { it.phoneAccountHandleId == accountHandleId }
+            ?: nonBlockingSims.firstOrNull()
 
         val sourceType = when {
             existing.sourceType == CallSourceType.SIM_2 || matchedSim?.slotIndex == 1 -> CallSourceType.SIM_2
@@ -921,17 +969,46 @@ class ActiveCallCoordinator(
             connectedAtEpochMs = connectedAt
         )
 
+        if (nonBlockingSims.isEmpty()) {
+            scope.launch(Dispatchers.IO) {
+                val sims = simDetector.detectActiveSims()
+                val detected = sims.firstOrNull { it.phoneAccountHandleId == accountHandleId } ?: sims.firstOrNull()
+                if (detected != null) {
+                    val detectedSource = if (detected.slotIndex == 1) CallSourceType.SIM_2 else CallSourceType.SIM_1
+                    _activeCall.update { cur ->
+                        if (cur.lifecycle == CallLifecycleState.IDLE) cur else cur.copy(
+                            sourceType = detectedSource,
+                            routeBadge = detected.fullLabel,
+                            telemetry = cur.telemetry.copy(transportLabel = detected.shortLabel)
+                        )
+                    }
+                    if (_activeCall.value.lifecycle == CallLifecycleState.RINGING_INCOMING) {
+                        notificationManager.showIncomingCallNotification(
+                            callerName = _activeCall.value.displayName,
+                            callerHandle = _activeCall.value.remoteHandle,
+                            lineBadge = detected.fullLabel,
+                            callerPhotoUri = _activeCall.value.remotePhotoUri,
+                            isCellularTelecom = true
+                        )
+                    }
+                }
+            }
+        }
+
         if (existing.remotePhotoUri == null || existing.displayName == remoteHandle || existing.remoteHandle != remoteHandle) {
             resolveContactInfoAsync(remoteHandle)
         }
 
         if (lifecycle == CallLifecycleState.RINGING_INCOMING) {
-            notificationManager.showIncomingCallNotification(
-                callerName = resolvedDisplayName,
-                callerHandle = remoteHandle,
-                lineBadge = routeBadge,
-                callerPhotoUri = existing.remotePhotoUri
-            )
+            scope.launch(Dispatchers.IO) {
+                notificationManager.showIncomingCallNotification(
+                    callerName = resolvedDisplayName,
+                    callerHandle = remoteHandle,
+                    lineBadge = routeBadge,
+                    callerPhotoUri = existing.remotePhotoUri,
+                    isCellularTelecom = true
+                )
+            }
         } else {
             notificationManager.cancelIncomingNotification()
         }
@@ -987,7 +1064,10 @@ class ActiveCallCoordinator(
         }
     }
 
-    private suspend fun finalizeAndClearCall(reason: String) = finalizeMutex.withLock {
+    private suspend fun finalizeAndClearCall(
+        reason: String,
+        holdStatusMs: Long = 200L
+    ) = finalizeMutex.withLock {
         val finished = _activeCall.value
         if (finished.lifecycle == CallLifecycleState.IDLE && finished.remoteHandle.isBlank()) {
             return@withLock
@@ -1036,8 +1116,14 @@ class ActiveCallCoordinator(
             )
         )
 
-        _activeCall.value = ActiveCallState(statusMessage = reason)
-        delay(200L)
+        _activeCall.value = finished.copy(
+            lifecycle = CallLifecycleState.ENDED,
+            isRecording = false,
+            statusMessage = reason
+        )
+        if (holdStatusMs > 0L) {
+            delay(holdStatusMs)
+        }
         _activeCall.value = ActiveCallState()
         _isCallUiMinimized.value = false
         _elapsedSeconds.value = 0
@@ -1046,11 +1132,56 @@ class ActiveCallCoordinator(
         activeSipFallbackAccount = null
     }
 
+    data class SipFailureOutcome(
+        val userMessage: String,
+        val isRetryableFormatAmbiguity: Boolean,
+        val showErrorBanner: Boolean
+    )
+
     companion object {
-        private val RETRYABLE_PRE_RING_CODES = setOf(404, 484, 486, 488, 502, 503, 603)
+        // Strictly retry alternative BD/E.164 format variants ONLY on number/address format ambiguity (404/484).
+        // Never retry when callee is busy (486), declines (603), or does not answer (480/408).
+        private val RETRYABLE_PRE_RING_CODES = setOf(404, 484)
         private val voipConnections = ConcurrentHashMap<String, WeakReference<VoipConnectionService.OmniVoipConnection>>()
         private var nativeInCallServiceRef: WeakReference<OmniCallInCallService>? = null
         private var nativeInCallRef: WeakReference<Call>? = null
+
+        fun classifySipFailure(
+            statusCode: Int,
+            rawReason: String,
+            beforeEarlyRinging: Boolean
+        ): SipFailureOutcome = when (statusCode) {
+            480, 408 -> SipFailureOutcome(
+                userMessage = "No answer",
+                isRetryableFormatAmbiguity = false,
+                showErrorBanner = false
+            )
+            486, 600 -> SipFailureOutcome(
+                userMessage = "User busy",
+                isRetryableFormatAmbiguity = false,
+                showErrorBanner = false
+            )
+            603 -> SipFailureOutcome(
+                userMessage = "Call declined",
+                isRetryableFormatAmbiguity = false,
+                showErrorBanner = false
+            )
+            487 -> SipFailureOutcome(
+                userMessage = "Call ended",
+                isRetryableFormatAmbiguity = false,
+                showErrorBanner = false
+            )
+            in RETRYABLE_PRE_RING_CODES -> SipFailureOutcome(
+                userMessage = rawReason,
+                isRetryableFormatAmbiguity = beforeEarlyRinging,
+                showErrorBanner = true
+            )
+            else -> SipFailureOutcome(
+                userMessage = rawReason,
+                isRetryableFormatAmbiguity = false,
+                showErrorBanner = true
+            )
+        }
 
         fun registerVoipConnection(callId: String, connection: VoipConnectionService.OmniVoipConnection) {
             if (callId.isNotBlank()) {

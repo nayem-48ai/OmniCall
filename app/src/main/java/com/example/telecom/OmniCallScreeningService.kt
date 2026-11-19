@@ -4,11 +4,15 @@ import android.os.Build
 import android.telecom.Call
 import android.telecom.CallScreeningService
 import com.example.OmniCallApplication
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Native Android [CallScreeningService] that blocks incoming calls matching OmniCall's Blocklist
- * cleanly without ringing or interrupting the user (like Phone by Google).
+ * cleanly without ringing or interrupting the user (like Phone by Google), while guaranteeing
+ * sub-150ms screening response so non-blocked calls ring instantly even on cold background launch.
  */
 class OmniCallScreeningService : CallScreeningService() {
 
@@ -26,13 +30,18 @@ class OmniCallScreeningService : CallScreeningService() {
 
         val handleNumber = callDetails.handle?.schemeSpecificPart.orEmpty()
         val app = applicationContext as? OmniCallApplication
-        val isBlocked = if (app != null && handleNumber.isNotBlank()) {
-            runBlocking {
-                runCatching { app.container.blocklistRepository.isBlocked(handleNumber) }
-                    .getOrDefault(false)
+        val repo = app?.container?.blocklistRepository
+
+        val isBlocked = when {
+            repo == null || handleNumber.isBlank() -> false
+            repo.isBlockedFast(handleNumber) -> true
+            else -> runBlocking {
+                withTimeoutOrNull(140L) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { repo.isBlocked(handleNumber) }.getOrDefault(false)
+                    }
+                } ?: false
             }
-        } else {
-            false
         }
 
         val response = if (isBlocked) {

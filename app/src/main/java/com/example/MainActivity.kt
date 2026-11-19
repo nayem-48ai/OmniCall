@@ -242,8 +242,7 @@ private fun OmniCallRoot(
         }
     }
 
-    val hasLiveCall = activeCall.lifecycle != CallLifecycleState.IDLE &&
-        activeCall.lifecycle != CallLifecycleState.ENDED
+    val hasLiveCall = activeCall.lifecycle != CallLifecycleState.IDLE
     val coordinator = app.container.activeCallCoordinator
 
     // Active / Incoming Call full-screen overlay (replaces Google Phone UI when OmniCall is Default Dialer)

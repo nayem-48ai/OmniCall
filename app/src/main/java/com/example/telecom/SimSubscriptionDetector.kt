@@ -20,6 +20,8 @@ class SimSubscriptionDetector(private val context: Context) {
     @Volatile
     private var cachedSims: List<SimSlotInfo> = emptyList()
 
+    fun getCachedSimsNonBlocking(): List<SimSlotInfo> = cachedSims
+
     fun getCachedSims(): List<SimSlotInfo> {
         val snapshot = cachedSims
         return if (snapshot.isNotEmpty()) snapshot else detectActiveSims()

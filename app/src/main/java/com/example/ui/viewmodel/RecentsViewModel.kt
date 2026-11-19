@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+import java.util.Calendar
+
 enum class RecentsFilter(val label: String) {
     ALL("All"),
     MISSED("Missed"),
@@ -22,11 +24,26 @@ enum class RecentsFilter(val label: String) {
     SIM("Cellular SIM")
 }
 
+enum class RecentsDateBucket(val title: String) {
+    TODAY("Today"),
+    YESTERDAY("Yesterday"),
+    OLDER("Older")
+}
+
 data class EnrichedCallLogItem(
     val log: CallLogItem,
     val displayName: String,
     val photoUri: String?,
     val isBlocked: Boolean = false
+)
+
+data class GroupedCallLogItem(
+    val groupKey: String,
+    val latest: EnrichedCallLogItem,
+    val groupedIds: List<Long>,
+    val callCount: Int,
+    val dateBucket: RecentsDateBucket,
+    val allEntries: List<EnrichedCallLogItem>
 )
 
 data class CallHistoryDetail(
@@ -41,6 +58,7 @@ data class RecentsUiState(
     val filter: RecentsFilter = RecentsFilter.ALL,
     val searchQuery: String = "",
     val items: List<EnrichedCallLogItem> = emptyList(),
+    val groupedItems: List<GroupedCallLogItem> = emptyList(),
     val matchingContacts: List<ContactItem> = emptyList(),
     val selectedHistory: CallHistoryDetail? = null,
     val selectedContact: ContactItem? = null
@@ -135,15 +153,18 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
             filter = filter,
             searchQuery = query,
             items = filteredItems,
+            groupedItems = groupConsecutiveRecents(filteredItems),
             selectedHistory = detail
         )
     }.combine(container.blocklistRepository.blockedFlow) { state, blockedList ->
         val blockedKeys = blockedList.map { it.normalizedKey }.toSet()
+        val enrichedWithBlock = state.items.map { item ->
+            val key = BlocklistRepository.normalizeKey(item.log.remoteHandle)
+            item.copy(isBlocked = key in blockedKeys)
+        }
         state.copy(
-            items = state.items.map { item ->
-                val key = BlocklistRepository.normalizeKey(item.log.remoteHandle)
-                item.copy(isBlocked = key in blockedKeys)
-            },
+            items = enrichedWithBlock,
+            groupedItems = groupConsecutiveRecents(enrichedWithBlock),
             selectedHistory = state.selectedHistory?.let { detail ->
                 val key = BlocklistRepository.normalizeKey(detail.remoteHandle)
                 detail.copy(isBlocked = key in blockedKeys)
@@ -216,6 +237,74 @@ class RecentsViewModel(private val container: AppContainer) : ViewModel() {
             } else {
                 container.blocklistRepository.blockNumber(handle, displayName)
             }
+        }
+    }
+
+    companion object {
+        fun classifyDateBucket(
+            timestampMs: Long,
+            nowMs: Long = System.currentTimeMillis()
+        ): RecentsDateBucket {
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = nowMs
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            val startOfTodayMs = cal.timeInMillis
+            cal.add(Calendar.DAY_OF_YEAR, -1)
+            val startOfYesterdayMs = cal.timeInMillis
+
+            return when {
+                timestampMs >= startOfTodayMs -> RecentsDateBucket.TODAY
+                timestampMs >= startOfYesterdayMs -> RecentsDateBucket.YESTERDAY
+                else -> RecentsDateBucket.OLDER
+            }
+        }
+
+        fun groupConsecutiveRecents(
+            items: List<EnrichedCallLogItem>,
+            nowMs: Long = System.currentTimeMillis()
+        ): List<GroupedCallLogItem> {
+            if (items.isEmpty()) return emptyList()
+            val result = mutableListOf<GroupedCallLogItem>()
+            var currentGroup = mutableListOf<EnrichedCallLogItem>()
+            var currentKey = ""
+            var currentBucket: RecentsDateBucket? = null
+
+            fun flushGroup() {
+                if (currentGroup.isEmpty()) return
+                val first = currentGroup.first()
+                val bucket = currentBucket ?: RecentsDateBucket.TODAY
+                result.add(
+                    GroupedCallLogItem(
+                        groupKey = "${bucket.name}_${first.log.id}",
+                        latest = first,
+                        groupedIds = currentGroup.map { it.log.id },
+                        callCount = currentGroup.size,
+                        dateBucket = bucket,
+                        allEntries = currentGroup.toList()
+                    )
+                )
+            }
+
+            for (item in items) {
+                val key = BlocklistRepository.normalizeKey(item.log.remoteHandle)
+                    .ifBlank { item.log.remoteHandle.lowercase() }
+                val bucket = classifyDateBucket(item.log.timestampMs, nowMs)
+
+                if (currentGroup.isNotEmpty() && key == currentKey && bucket == currentBucket) {
+                    currentGroup.add(item)
+                } else {
+                    flushGroup()
+                    currentGroup = mutableListOf(item)
+                    currentKey = key
+                    currentBucket = bucket
+                }
+            }
+            flushGroup()
+            return result
         }
     }
 }

@@ -180,7 +180,7 @@ fun InCallScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(horizontal = 24.dp, vertical = 14.dp)
+                .padding(horizontal = 20.dp, vertical = 14.dp)
                 .widthIn(max = 520.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
@@ -462,53 +462,241 @@ fun InCallScreen(
                     modifier = Modifier.padding(bottom = 24.dp)
                 )
             } else if (showDtmfPad) {
-                // Google Phone / Zoiper-style full regular In-Call Dialpad
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth()
+                // Google Phone / Zoiper-style full regular In-Call Dialpad inside elevated dock
+                Surface(
+                    shape = RoundedCornerShape(32.dp),
+                    color = lerp(InCallGradientBottom, Color.White, 0.08f).copy(alpha = 0.90f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp)
+                        .border(
+                            width = 1.dp,
+                            color = Color.White.copy(alpha = 0.10f),
+                            shape = RoundedCornerShape(32.dp)
+                        )
+                        .testTag("in_call_dtmf_dock")
                 ) {
-                    Text(
-                        text = if (enteredDtmfDigits.isEmpty()) "Tap keys to send tones" else enteredDtmfDigits.takeLast(18),
-                        style = if (enteredDtmfDigits.isEmpty()) {
-                            MaterialTheme.typography.bodyMedium
-                        } else {
-                            MaterialTheme.typography.headlineMedium
-                        },
-                        color = if (enteredDtmfDigits.isEmpty()) {
-                            Color.White.copy(alpha = 0.55f)
-                        } else {
-                            Color.White
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .testTag("in_call_dtmf_display")
-                    )
-
-                    InCallRegularDialpad(
-                        onDigit = { digit ->
-                            enteredDtmfDigits += digit
-                            onSendDtmf(digit)
-                        }
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 14.dp, vertical = 18.dp)
                     ) {
-                        Spacer(modifier = Modifier.width(88.dp))
+                        Text(
+                            text = if (enteredDtmfDigits.isEmpty()) "Tap keys to send tones" else enteredDtmfDigits.takeLast(18),
+                            style = if (enteredDtmfDigits.isEmpty()) {
+                                MaterialTheme.typography.bodyMedium
+                            } else {
+                                MaterialTheme.typography.headlineMedium
+                            },
+                            color = if (enteredDtmfDigits.isEmpty()) {
+                                Color.White.copy(alpha = 0.55f)
+                            } else {
+                                Color.White
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .testTag("in_call_dtmf_display")
+                        )
 
+                        InCallRegularDialpad(
+                            onDigit = { digit ->
+                                enteredDtmfDigits += digit
+                                onSendDtmf(digit)
+                            }
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Spacer(modifier = Modifier.width(88.dp))
+
+                            FilledIconButton(
+                                onClick = onEndCall,
+                                modifier = Modifier
+                                    .size(width = 96.dp, height = 64.dp)
+                                    .testTag("in_call_end_button"),
+                                shape = RoundedCornerShape(32.dp),
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = SignalRecording,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CallEnd,
+                                    contentDescription = "End Call",
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color.White.copy(alpha = 0.14f),
+                                modifier = Modifier
+                                    .width(88.dp)
+                                    .height(48.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable { showDtmfPad = false }
+                                    .testTag("in_call_hide_keypad_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                                        contentDescription = "Hide keypad",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Hide",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Google Phone inspired rounded dark control dock with comfortably raised End Call pill
+                Surface(
+                    shape = RoundedCornerShape(32.dp),
+                    color = lerp(InCallGradientBottom, Color.White, 0.08f).copy(alpha = 0.90f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 18.dp)
+                        .border(
+                            width = 1.dp,
+                            color = Color.White.copy(alpha = 0.10f),
+                            shape = RoundedCornerShape(32.dp)
+                        )
+                        .testTag("in_call_controls_dock")
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 20.dp)
+                    ) {
+                        // 6-Tile Google Phone Style Control Grid
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                CallControlTile(
+                                    icon = if (callState.isMuted) Icons.Rounded.MicOff else Icons.Rounded.Mic,
+                                    label = if (callState.isMuted) "Unmute" else "Mute",
+                                    active = callState.isMuted,
+                                    onClick = onToggleMute,
+                                    testTag = "in_call_mute_button"
+                                )
+                                CallControlTile(
+                                    icon = Icons.Rounded.Dialpad,
+                                    label = "Keypad",
+                                    active = false,
+                                    onClick = { showDtmfPad = true },
+                                    testTag = "in_call_keypad_button"
+                                )
+                                val hasMultipleOutputs = callState.availableAudioRoutes.size > 2
+                                if (!hasMultipleOutputs) {
+                                    CallControlTile(
+                                        icon = Icons.Rounded.VolumeUp,
+                                        label = "Speaker",
+                                        active = callState.audioRoute == AudioRouteType.SPEAKER,
+                                        onClick = {
+                                            val nextRoute = if (callState.audioRoute == AudioRouteType.SPEAKER) {
+                                                AudioRouteType.EARPIECE
+                                            } else {
+                                                AudioRouteType.SPEAKER
+                                            }
+                                            onSelectAudioRoute(nextRoute)
+                                        },
+                                        testTag = "in_call_audio_route_button"
+                                    )
+                                } else {
+                                    Box {
+                                        CallControlTile(
+                                            icon = when (callState.audioRoute) {
+                                                AudioRouteType.SPEAKER -> Icons.Rounded.VolumeUp
+                                                AudioRouteType.BLUETOOTH -> Icons.Rounded.BluetoothAudio
+                                                AudioRouteType.WIRED_HEADSET -> Icons.Rounded.Headset
+                                                AudioRouteType.EARPIECE -> Icons.Rounded.PhoneInTalk
+                                            },
+                                            label = callState.audioRoute.label,
+                                            active = callState.audioRoute != AudioRouteType.EARPIECE,
+                                            onClick = { showAudioMenu = true },
+                                            testTag = "in_call_audio_route_button"
+                                        )
+                                        DropdownMenu(
+                                            expanded = showAudioMenu,
+                                            onDismissRequest = { showAudioMenu = false }
+                                        ) {
+                                            callState.availableAudioRoutes.forEach { route ->
+                                                DropdownMenuItem(
+                                                    text = { Text(route.label) },
+                                                    onClick = {
+                                                        onSelectAudioRoute(route)
+                                                        showAudioMenu = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                CallControlTile(
+                                    icon = Icons.Rounded.FiberManualRecord,
+                                    label = if (callState.isRecording) "Stop Rec" else "Record",
+                                    active = callState.isRecording,
+                                    activeColor = SignalRecording,
+                                    onClick = onToggleRecord,
+                                    testTag = "in_call_record_button"
+                                )
+                                CallControlTile(
+                                    icon = if (callState.isOnHold) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                                    label = if (callState.isOnHold) "Resume" else "Hold",
+                                    active = callState.isOnHold,
+                                    onClick = onToggleHold,
+                                    testTag = "in_call_hold_button"
+                                )
+                                CallControlTile(
+                                    icon = Icons.Rounded.SmartToy,
+                                    label = "Tap Ready",
+                                    active = false,
+                                    onClick = { /* Phase 2 AI Agent Tap hook indicator */ },
+                                    testTag = "in_call_ai_hook_badge"
+                                )
+                            }
+                        }
+
+                        // Raised Hangup Pill matching Google Phone ergonomics
                         FilledIconButton(
                             onClick = onEndCall,
                             modifier = Modifier
-                                .size(width = 84.dp, height = 64.dp)
+                                .size(width = 96.dp, height = 64.dp)
                                 .testTag("in_call_end_button"),
                             shape = RoundedCornerShape(32.dp),
                             colors = IconButtonDefaults.filledIconButtonColors(
@@ -522,161 +710,6 @@ fun InCallScreen(
                                 modifier = Modifier.size(30.dp)
                             )
                         }
-
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = Color.White.copy(alpha = 0.14f),
-                            modifier = Modifier
-                                .width(88.dp)
-                                .height(48.dp)
-                                .clip(RoundedCornerShape(50))
-                                .clickable { showDtmfPad = false }
-                                .testTag("in_call_hide_keypad_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxSize(),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.KeyboardArrowDown,
-                                    contentDescription = "Hide keypad",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Hide",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    // 6-Tile Google Phone Style Control Grid
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            CallControlTile(
-                                icon = if (callState.isMuted) Icons.Rounded.MicOff else Icons.Rounded.Mic,
-                                label = if (callState.isMuted) "Unmute" else "Mute",
-                                active = callState.isMuted,
-                                onClick = onToggleMute,
-                                testTag = "in_call_mute_button"
-                            )
-                            CallControlTile(
-                                icon = Icons.Rounded.Dialpad,
-                                label = "Keypad",
-                                active = false,
-                                onClick = { showDtmfPad = true },
-                                testTag = "in_call_keypad_button"
-                            )
-                            val hasMultipleOutputs = callState.availableAudioRoutes.size > 2
-                            if (!hasMultipleOutputs) {
-                                CallControlTile(
-                                    icon = Icons.Rounded.VolumeUp,
-                                    label = "Speaker",
-                                    active = callState.audioRoute == AudioRouteType.SPEAKER,
-                                    onClick = {
-                                        val nextRoute = if (callState.audioRoute == AudioRouteType.SPEAKER) {
-                                            AudioRouteType.EARPIECE
-                                        } else {
-                                            AudioRouteType.SPEAKER
-                                        }
-                                        onSelectAudioRoute(nextRoute)
-                                    },
-                                    testTag = "in_call_audio_route_button"
-                                )
-                            } else {
-                                Box {
-                                    CallControlTile(
-                                        icon = when (callState.audioRoute) {
-                                            AudioRouteType.SPEAKER -> Icons.Rounded.VolumeUp
-                                            AudioRouteType.BLUETOOTH -> Icons.Rounded.BluetoothAudio
-                                            AudioRouteType.WIRED_HEADSET -> Icons.Rounded.Headset
-                                            AudioRouteType.EARPIECE -> Icons.Rounded.PhoneInTalk
-                                        },
-                                        label = callState.audioRoute.label,
-                                        active = callState.audioRoute != AudioRouteType.EARPIECE,
-                                        onClick = { showAudioMenu = true },
-                                        testTag = "in_call_audio_route_button"
-                                    )
-                                    DropdownMenu(
-                                        expanded = showAudioMenu,
-                                        onDismissRequest = { showAudioMenu = false }
-                                    ) {
-                                        callState.availableAudioRoutes.forEach { route ->
-                                            DropdownMenuItem(
-                                                text = { Text(route.label) },
-                                                onClick = {
-                                                    onSelectAudioRoute(route)
-                                                    showAudioMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            CallControlTile(
-                                icon = Icons.Rounded.FiberManualRecord,
-                                label = if (callState.isRecording) "Stop Rec" else "Record",
-                                active = callState.isRecording,
-                                activeColor = SignalRecording,
-                                onClick = onToggleRecord,
-                                testTag = "in_call_record_button"
-                            )
-                            CallControlTile(
-                                icon = if (callState.isOnHold) Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                                label = if (callState.isOnHold) "Resume" else "Hold",
-                                active = callState.isOnHold,
-                                onClick = onToggleHold,
-                                testTag = "in_call_hold_button"
-                            )
-                            CallControlTile(
-                                icon = Icons.Rounded.SmartToy,
-                                label = "Tap Ready",
-                                active = false,
-                                onClick = { /* Phase 2 AI Agent Tap hook indicator */ },
-                                testTag = "in_call_ai_hook_badge"
-                            )
-                        }
-                    }
-
-                    // Hangup FAB
-                    FilledIconButton(
-                        onClick = onEndCall,
-                        modifier = Modifier
-                            .size(width = 84.dp, height = 64.dp)
-                            .testTag("in_call_end_button"),
-                        shape = RoundedCornerShape(32.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = SignalRecording,
-                            contentColor = Color.White
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.CallEnd,
-                            contentDescription = "End Call",
-                            modifier = Modifier.size(30.dp)
-                        )
                     }
                 }
             }
@@ -1070,13 +1103,22 @@ fun CallMiniWindowCard(
         label = "mini_pulse_alpha"
     )
 
+    val conciseBadge = com.example.telecom.CallNotificationManager
+        .extractShortLineLabel(callState.routeBadge.ifBlank { callState.sourceType.label })
+        .ifBlank { callState.sourceType.label }
+
     val statusText = when (callState.lifecycle) {
-        CallLifecycleState.RINGING_INCOMING -> "Incoming • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
-        CallLifecycleState.DIALING -> "Dialing • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
-        CallLifecycleState.RINGING_OUTGOING -> "Ringing • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
+        CallLifecycleState.RINGING_INCOMING ->
+            if (callState.remoteHandle.isNotBlank() && callState.remoteHandle != callState.displayName) {
+                "Incoming Via $conciseBadge, ${callState.remoteHandle}"
+            } else {
+                "Incoming Via $conciseBadge"
+            }
+        CallLifecycleState.DIALING -> "Dialing • $conciseBadge"
+        CallLifecycleState.RINGING_OUTGOING -> "Ringing • $conciseBadge"
         CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
-        CallLifecycleState.ACTIVE -> "${formatElapsed(elapsedSeconds)} • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
-        else -> callState.routeBadge
+        CallLifecycleState.ACTIVE -> "${formatElapsed(elapsedSeconds)} • $conciseBadge"
+        else -> conciseBadge
     }
 
     Surface(

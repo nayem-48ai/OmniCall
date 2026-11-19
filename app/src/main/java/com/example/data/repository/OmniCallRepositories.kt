@@ -277,9 +277,21 @@ class BlocklistRepository(
     @Volatile
     private var cachedKeys: Set<String> = emptySet()
 
+    @Volatile
+    private var cacheWarmed: Boolean = false
+
     val blockedFlow: Flow<List<BlockedNumberItem>> = dao.observeAll().map { list ->
         cachedKeys = list.map { it.normalizedKey }.toSet()
+        cacheWarmed = true
         list.map { it.toDomain() }
+    }
+
+    fun isCacheWarmed(): Boolean = cacheWarmed
+
+    suspend fun warmupCache() {
+        val all = runCatching { dao.getAll() }.getOrDefault(emptyList())
+        cachedKeys = all.map { it.normalizedKey }.toSet()
+        cacheWarmed = true
     }
 
     fun isBlockedFast(handle: String): Boolean {
@@ -294,6 +306,7 @@ class BlocklistRepository(
         if (key.isEmpty()) return false
         val all = dao.getAll()
         cachedKeys = all.map { it.normalizedKey }.toSet()
+        cacheWarmed = true
         val localHit = all.any { it.normalizedKey == key }
         if (localHit) return true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {

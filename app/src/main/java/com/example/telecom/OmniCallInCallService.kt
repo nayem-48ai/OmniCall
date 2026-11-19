@@ -52,22 +52,31 @@ class OmniCallInCallService : InCallService() {
         call.registerCallback(callCallback)
         ActiveCallCoordinator.bindNativeInCallService(this, call)
 
-        // Sync call state immediately (uses cached SIM slots so main thread never blocks)
-        syncCallState(call, state)
-
-        // Launch full-screen incoming UI immediately without waiting for async contact/DB lookups
         if (state == Call.STATE_RINGING) {
+            val display = call.details.callerDisplayName ?: handle
+            val accountHandleId = call.details.accountHandle?.id
+            // 1. Populate lightweight RINGING state synchronously with zero blocking IPC
+            coordinator()?.primeFastIncomingSimCall(
+                remoteHandle = handle.ifBlank { "Unknown" },
+                displayName = display.ifBlank { handle.ifBlank { "Unknown" } },
+                accountHandleId = accountHandleId
+            )
+            // 2. Immediately present full-screen Incoming Call UI while BAL privilege is active
             runCatching {
                 startActivity(
                     Intent(this, IncomingCallActivity::class.java).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_SINGLE_TOP or
                             Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
                             Intent.FLAG_ACTIVITY_NO_USER_ACTION
                     }
                 )
             }
+            // 3. Enrich SIM carrier slot, contacts avatar, and FullScreenIntent heads-up notification
+            syncCallState(call, state)
         } else {
+            syncCallState(call, state)
             runCatching {
                 startActivity(
                     Intent(this, MainActivity::class.java).apply {

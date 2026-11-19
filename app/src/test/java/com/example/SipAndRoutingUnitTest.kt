@@ -2,10 +2,13 @@ package com.example
 
 import com.example.audio.AudioCodecUtils
 import com.example.data.repository.BlocklistRepository
+import com.example.data.repository.CallLogItem
 import com.example.data.repository.ContactItem
 import com.example.data.repository.ContactPhoneNumber
 import com.example.data.repository.VcfContactsCodec
 import com.example.domain.model.AvailableCallingEnvironment
+import com.example.domain.model.CallDirection
+import com.example.domain.model.CallSourceType
 import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingType
@@ -16,8 +19,15 @@ import com.example.domain.model.SipTransport
 import com.example.sip.BalanceResponseParser
 import com.example.sip.SipClientEngine
 import com.example.sip.SipMessageCodec
+import com.example.telecom.ActiveCallCoordinator
+import com.example.telecom.CallNotificationManager
 import com.example.ui.theme.AppColorPalette
+import com.example.ui.viewmodel.DialerViewModel
+import com.example.ui.viewmodel.EnrichedCallLogItem
+import com.example.ui.viewmodel.RecentsDateBucket
+import com.example.ui.viewmodel.RecentsViewModel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -463,5 +473,129 @@ class SipAndRoutingUnitTest {
         assertTrue(req.contains("Via: SIP/2.0/UDP 192.168.1.25:51000"))
         assertTrue(req.contains("CSeq: 1 OPTIONS"))
         assertTrue(req.contains("From: <sip:09639170537@icctalk.com>"))
+    }
+
+    @Test
+    fun dialerSuggestions_returnsMultipleDistinctContactsWhenLatestLogsRepeatSameCaller() {
+        val now = 1_700_000_000_000L
+        val recents = listOf(
+            CallLogItem(1, "01711111111", "Ammu", CallDirection.OUTGOING, CallSourceType.SIM_1, "SIM 1", now, 0, null),
+            CallLogItem(2, "01711111111", "Ammu", CallDirection.OUTGOING, CallSourceType.SIM_1, "SIM 1", now - 1000, 12, null),
+            CallLogItem(3, "+8801711111111", "Ammu", CallDirection.MISSED, CallSourceType.SIM_1, "SIM 1", now - 2000, 0, null),
+            CallLogItem(4, "01711111111", "Ammu", CallDirection.OUTGOING, CallSourceType.SIM_1, "SIM 1", now - 3000, 5, null),
+            CallLogItem(5, "01722222222", "Tanvir", CallDirection.INCOMING, CallSourceType.SIM_2, "SIM 2", now - 4000, 30, null),
+            CallLogItem(6, "01733333333", "Rafiq", CallDirection.OUTGOING, CallSourceType.SIP, "ICC", now - 5000, 45, null),
+            CallLogItem(7, "01744444444", "Nadia", CallDirection.OUTGOING, CallSourceType.SIM_1, "SIM 1", now - 6000, 18, null),
+            CallLogItem(8, "01755555555", "Siam", CallDirection.INCOMING, CallSourceType.SIM_1, "SIM 1", now - 7000, 22, null)
+        )
+        val suggestions = DialerViewModel.buildSuggestions(
+            query = "",
+            recents = recents,
+            contacts = emptyList()
+        )
+        assertEquals(5, suggestions.size)
+        assertEquals(
+            listOf("Ammu", "Tanvir", "Rafiq", "Nadia", "Siam"),
+            suggestions.map { it.displayName }
+        )
+    }
+
+    @Test
+    fun recentsGrouping_mergesConsecutiveSameContactWithinDateBuckets() {
+        val cal = java.util.Calendar.getInstance().apply {
+            set(2025, java.util.Calendar.JUNE, 15, 14, 0, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val now = cal.timeInMillis
+        val oneHourAgo = now - 3_600_000L
+        val yesterdayAfternoon = now - 24 * 3_600_000L
+        val fourDaysAgo = now - 4 * 24 * 3_600_000L
+
+        val entries = listOf(
+            EnrichedCallLogItem(
+                log = CallLogItem(10, "01711111111", "Ammu", CallDirection.OUTGOING, CallSourceType.SIM_1, "SIM 1", now, 10, null),
+                displayName = "Ammu",
+                photoUri = null
+            ),
+            EnrichedCallLogItem(
+                log = CallLogItem(9, "+8801711111111", "Ammu", CallDirection.MISSED, CallSourceType.SIM_1, "SIM 1", oneHourAgo, 0, null),
+                displayName = "Ammu",
+                photoUri = null
+            ),
+            EnrichedCallLogItem(
+                log = CallLogItem(8, "01722222222", "Tanvir", CallDirection.INCOMING, CallSourceType.SIM_2, "SIM 2", oneHourAgo - 1000L, 40, null),
+                displayName = "Tanvir",
+                photoUri = null
+            ),
+            EnrichedCallLogItem(
+                log = CallLogItem(7, "01711111111", "Ammu", CallDirection.OUTGOING, CallSourceType.SIM_1, "SIM 1", yesterdayAfternoon, 25, null),
+                displayName = "Ammu",
+                photoUri = null
+            ),
+            EnrichedCallLogItem(
+                log = CallLogItem(6, "01733333333", "Rafiq", CallDirection.OUTGOING, CallSourceType.SIP, "ICC", fourDaysAgo, 60, null),
+                displayName = "Rafiq",
+                photoUri = null
+            )
+        )
+
+        val grouped = RecentsViewModel.groupConsecutiveRecents(entries, nowMs = now)
+        assertEquals(4, grouped.size)
+        assertEquals(2, grouped[0].callCount)
+        assertEquals(RecentsDateBucket.TODAY, grouped[0].dateBucket)
+        assertEquals("Ammu", grouped[0].latest.displayName)
+        assertEquals(1, grouped[1].callCount)
+        assertEquals(RecentsDateBucket.TODAY, grouped[1].dateBucket)
+        assertEquals(1, grouped[2].callCount)
+        assertEquals(RecentsDateBucket.YESTERDAY, grouped[2].dateBucket)
+        assertEquals(1, grouped[3].callCount)
+        assertEquals(RecentsDateBucket.OLDER, grouped[3].dateBucket)
+    }
+
+    @Test
+    fun sipFailureClassification_doesNotRetryOrShowErrorBannerOnNoAnswerBusyDecline() {
+        val noAnswer = ActiveCallCoordinator.classifySipFailure(480, "SIP 480 Temporarily Unavailable", beforeEarlyRinging = false)
+        assertEquals("No answer", noAnswer.userMessage)
+        assertFalse(noAnswer.isRetryableFormatAmbiguity)
+        assertFalse(noAnswer.showErrorBanner)
+
+        val timeout = ActiveCallCoordinator.classifySipFailure(408, "SIP 408 Request Timeout", beforeEarlyRinging = true)
+        assertEquals("No answer", timeout.userMessage)
+        assertFalse(timeout.isRetryableFormatAmbiguity)
+        assertFalse(timeout.showErrorBanner)
+
+        val busy = ActiveCallCoordinator.classifySipFailure(486, "SIP 486 Busy Here", beforeEarlyRinging = true)
+        assertEquals("User busy", busy.userMessage)
+        assertFalse(busy.isRetryableFormatAmbiguity)
+        assertFalse(busy.showErrorBanner)
+
+        val declined = ActiveCallCoordinator.classifySipFailure(603, "SIP 603 Decline", beforeEarlyRinging = true)
+        assertEquals("Call declined", declined.userMessage)
+        assertFalse(declined.isRetryableFormatAmbiguity)
+        assertFalse(declined.showErrorBanner)
+
+        val notFoundPreRing = ActiveCallCoordinator.classifySipFailure(404, "SIP 404 Not Found", beforeEarlyRinging = true)
+        assertTrue(notFoundPreRing.isRetryableFormatAmbiguity)
+        assertTrue(notFoundPreRing.showErrorBanner)
+    }
+
+    @Test
+    fun incomingNotificationSubtitle_excludesCarrierNameAndFitsConciseFormat() {
+        assertEquals(
+            "Incoming Via SIM 1, +8801783103515",
+            CallNotificationManager.formatIncomingSubtitle(
+                lineBadge = "SIM 1 • Grameenphone",
+                callerHandle = "+8801783103515",
+                displayTitle = "Mom"
+            )
+        )
+        assertEquals(
+            "Incoming Via SIM 2",
+            CallNotificationManager.formatIncomingSubtitle(
+                lineBadge = "SIM 2 • Robi",
+                callerHandle = "+8801811223344",
+                displayTitle = "+8801811223344"
+            )
+        )
     }
 }

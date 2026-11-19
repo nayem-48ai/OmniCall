@@ -77,13 +77,13 @@ class DialerViewModel(
         container.preferencesRepository.settingsFlow
     ) { input, recents, sims, sipAccounts, settings ->
         val filtered = if (input.isBlank()) {
-            recents.take(4)
+            recents.take(40)
         } else {
             val q = input.trim().lowercase()
             recents.filter {
                 it.remoteHandle.lowercase().contains(q) ||
                     it.displayName.lowercase().contains(q)
-            }.take(6)
+            }.take(40)
         }
         val env = AvailableCallingEnvironment(
             simSlots = sims,
@@ -142,84 +142,6 @@ class DialerViewModel(
         viewModelScope.launch {
             _contacts.value = container.contactsRepository.loadContacts()
         }
-    }
-
-    private fun buildSuggestions(
-        query: String,
-        recents: List<CallLogItem>,
-        contacts: List<ContactItem>
-    ): List<DialerSuggestionItem> {
-        val tailMap = HashMap<String, ContactItem>()
-        contacts.forEach { contact ->
-            contact.phoneNumbers.forEach { phone ->
-                val tail = phone.number.filter(Char::isDigit).let { d ->
-                    if (d.length >= 8) d.takeLast(9) else d
-                }
-                if (tail.isNotEmpty() && !tailMap.containsKey(tail)) {
-                    tailMap[tail] = contact
-                }
-            }
-        }
-
-        val seenNumbers = HashSet<String>()
-        val results = mutableListOf<DialerSuggestionItem>()
-
-        recents.forEach { log ->
-            val digits = log.remoteHandle.filter(Char::isDigit)
-            val tail = if (digits.length >= 8) digits.takeLast(9) else digits
-            val key = tail.ifBlank { log.remoteHandle.lowercase() }
-            if (seenNumbers.add(key)) {
-                val matchedContact = if (tail.isNotEmpty()) tailMap[tail] else null
-                val resolvedName = matchedContact?.displayName?.ifBlank { null }
-                    ?: log.displayName.ifBlank { log.remoteHandle }
-                results.add(
-                    DialerSuggestionItem(
-                        id = "recent_${log.id}",
-                        displayName = resolvedName,
-                        number = log.remoteHandle,
-                        photoUri = matchedContact?.photoUri,
-                        direction = log.direction,
-                        sourceType = log.sourceType,
-                        lineLabel = log.lineLabel,
-                        timestampMs = log.timestampMs,
-                        isContactMatch = false
-                    )
-                )
-            }
-        }
-
-        val q = query.trim().lowercase()
-        if (q.isNotBlank()) {
-            val qDigits = q.filter(Char::isDigit)
-            for (contact in contacts) {
-                if (results.size >= 6) break
-                val nameMatches = contact.displayName.lowercase().contains(q)
-                val matchedPhone = contact.phoneNumbers.firstOrNull { phone ->
-                    phone.number.lowercase().contains(q) ||
-                        (qDigits.isNotEmpty() && phone.number.filter(Char::isDigit).contains(qDigits))
-                } ?: if (nameMatches) contact.phoneNumbers.firstOrNull() else null
-
-                if (matchedPhone != null) {
-                    val digits = matchedPhone.number.filter(Char::isDigit)
-                    val tail = if (digits.length >= 8) digits.takeLast(9) else digits
-                    val key = tail.ifBlank { matchedPhone.number.lowercase() }
-                    if (seenNumbers.add(key)) {
-                        results.add(
-                            DialerSuggestionItem(
-                                id = "contact_${contact.id}_$key",
-                                displayName = contact.displayName,
-                                number = matchedPhone.number,
-                                photoUri = contact.photoUri,
-                                lineLabel = matchedPhone.typeLabel,
-                                isContactMatch = true
-                            )
-                        )
-                    }
-                }
-            }
-        }
-
-        return results.take(if (q.isBlank()) 4 else 6)
     }
 
     fun appendDigit(digit: Char) {
@@ -355,6 +277,88 @@ class DialerViewModel(
         super.onCleared()
         runCatching { toneGenerator?.release() }
         toneGenerator = null
+    }
+
+    companion object {
+        fun buildSuggestions(
+            query: String,
+            recents: List<CallLogItem>,
+            contacts: List<ContactItem>
+        ): List<DialerSuggestionItem> {
+            val tailMap = HashMap<String, ContactItem>()
+            contacts.forEach { contact ->
+                contact.phoneNumbers.forEach { phone ->
+                    val tail = phone.number.filter(Char::isDigit).let { d ->
+                        if (d.length >= 8) d.takeLast(9) else d
+                    }
+                    if (tail.isNotEmpty() && !tailMap.containsKey(tail)) {
+                        tailMap[tail] = contact
+                    }
+                }
+            }
+
+            val q = query.trim().lowercase()
+            val maxSuggestions = if (q.isBlank()) 5 else 6
+            val seenNumbers = HashSet<String>()
+            val results = mutableListOf<DialerSuggestionItem>()
+
+            for (log in recents) {
+                if (results.size >= maxSuggestions) break
+                val digits = log.remoteHandle.filter(Char::isDigit)
+                val tail = if (digits.length >= 8) digits.takeLast(9) else digits
+                val key = tail.ifBlank { log.remoteHandle.lowercase() }
+                if (seenNumbers.add(key)) {
+                    val matchedContact = if (tail.isNotEmpty()) tailMap[tail] else null
+                    val resolvedName = matchedContact?.displayName?.ifBlank { null }
+                        ?: log.displayName.ifBlank { log.remoteHandle }
+                    results.add(
+                        DialerSuggestionItem(
+                            id = "recent_${log.id}",
+                            displayName = resolvedName,
+                            number = log.remoteHandle,
+                            photoUri = matchedContact?.photoUri,
+                            direction = log.direction,
+                            sourceType = log.sourceType,
+                            lineLabel = log.lineLabel,
+                            timestampMs = log.timestampMs,
+                            isContactMatch = false
+                        )
+                    )
+                }
+            }
+
+            if (q.isNotBlank()) {
+                val qDigits = q.filter(Char::isDigit)
+                for (contact in contacts) {
+                    if (results.size >= maxSuggestions) break
+                    val nameMatches = contact.displayName.lowercase().contains(q)
+                    val matchedPhone = contact.phoneNumbers.firstOrNull { phone ->
+                        phone.number.lowercase().contains(q) ||
+                            (qDigits.isNotEmpty() && phone.number.filter(Char::isDigit).contains(qDigits))
+                    } ?: if (nameMatches) contact.phoneNumbers.firstOrNull() else null
+
+                    if (matchedPhone != null) {
+                        val digits = matchedPhone.number.filter(Char::isDigit)
+                        val tail = if (digits.length >= 8) digits.takeLast(9) else digits
+                        val key = tail.ifBlank { matchedPhone.number.lowercase() }
+                        if (seenNumbers.add(key)) {
+                            results.add(
+                                DialerSuggestionItem(
+                                    id = "contact_${contact.id}_$key",
+                                    displayName = contact.displayName,
+                                    number = matchedPhone.number,
+                                    photoUri = contact.photoUri,
+                                    lineLabel = matchedPhone.typeLabel,
+                                    isContactMatch = true
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            return results
+        }
     }
 }
 

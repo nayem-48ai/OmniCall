@@ -88,11 +88,15 @@ class OmniCallApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
-        container.callNotificationManager.ensureChannels()
-        container.telecomCallManager.registerSelfManagedSipAccount()
 
-        // Automatically reconnect default enabled SIP account and refresh Balance on startup
+        // Pre-warm channels, SIM cache, blocklist cache, and Telecom bindings off the main thread
+        // so cold-start incoming cellular calls present OmniCall UI instantaneously.
         appScope.launch {
+            runCatching { container.callNotificationManager.ensureChannels() }
+            runCatching { container.telecomCallManager.registerSelfManagedSipAccount() }
+            runCatching { container.blocklistRepository.warmupCache() }
+            runCatching { container.simSubscriptionDetector.detectActiveSims() }
+
             val defaultSip = container.sipAccountRepository.getDefaultActiveAccount()
             if (defaultSip != null) {
                 container.sipClientEngine.startAccountRegistration(defaultSip)

@@ -30,10 +30,13 @@ import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.NetworkCheck
+import androidx.compose.material.icons.rounded.PermDeviceInformation
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SimCard
@@ -66,7 +69,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -77,6 +83,8 @@ import com.example.domain.model.SipAccountModel
 import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
 import com.example.sip.SipNetworkHealthResult
+import com.example.telecom.PhoneInfoLaunchTarget
+import com.example.telecom.PhoneInfoLauncher
 import com.example.ui.theme.AppColorPalette
 import com.example.ui.theme.SignalConnected
 import com.example.ui.theme.SignalWarning
@@ -99,6 +107,10 @@ fun SipSettingsScreen(
     val env = uiState.environment
     val availableModes = env.availableModes()
     val effectiveMode = env.effectiveSelectedMode()
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    var phoneInfoNotice by remember { mutableStateOf<String?>(null) }
+    var copiedDialCode by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -248,6 +260,116 @@ fun SipSettingsScreen(
                             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                             contentDescription = "Open Blocklist"
                         )
+                    }
+                }
+            }
+
+            // Phone Info (RadioInfo / Network Band Testing) Entry Card
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable {
+                                copiedDialCode = false
+                                val res = PhoneInfoLauncher.launch(context)
+                                phoneInfoNotice = if (res.target == PhoneInfoLaunchTarget.RADIO_INFO) {
+                                    null
+                                } else {
+                                    res.statusMessage
+                                }
+                            }
+                            .testTag("settings_open_phone_info_card")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PermDeviceInformation,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Phone info",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Radio network mode, 4G/5G band lock & IMS status",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                contentDescription = "Open Phone info"
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(visible = !phoneInfoNotice.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = phoneInfoNotice.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { phoneInfoNotice = null },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "Dismiss Phone info notice",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(PhoneInfoLauncher.TESTING_DIALER_CODE))
+                                        copiedDialCode = true
+                                    },
+                                    modifier = Modifier.testTag("copy_phone_info_code_button")
+                                ) {
+                                    Icon(
+                                        imageVector = if (copiedDialCode) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        if (copiedDialCode) {
+                                            "Copied ${PhoneInfoLauncher.TESTING_DIALER_CODE}"
+                                        } else {
+                                            "Copy ${PhoneInfoLauncher.TESTING_DIALER_CODE}"
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

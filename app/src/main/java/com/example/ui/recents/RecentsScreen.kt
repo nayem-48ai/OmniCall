@@ -86,6 +86,8 @@ import com.example.ui.theme.SignalRecording
 import com.example.ui.theme.SignalWarning
 import com.example.ui.viewmodel.CallHistoryDetail
 import com.example.ui.viewmodel.EnrichedCallLogItem
+import com.example.ui.viewmodel.GroupedCallLogItem
+import com.example.ui.viewmodel.RecentsDateBucket
 import com.example.ui.viewmodel.RecentsFilter
 import com.example.ui.viewmodel.RecentsUiState
 import java.text.SimpleDateFormat
@@ -114,7 +116,7 @@ fun RecentsScreen(
 
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     val isSelectionMode = selectedIds.isNotEmpty()
-    var pendingSwipeDeleteEntry by remember { mutableStateOf<EnrichedCallLogItem?>(null) }
+    var pendingSwipeDeleteGroup by remember { mutableStateOf<GroupedCallLogItem?>(null) }
 
     BackHandler(enabled = isSelectionMode) {
         selectedIds = emptySet()
@@ -161,7 +163,7 @@ fun RecentsScreen(
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.weight(1f)
                         )
-                        val allVisibleIds = uiState.items.map { it.log.id }.toSet()
+                        val allVisibleIds = uiState.groupedItems.flatMap { it.groupedIds }.toSet()
                         val allSelected = allVisibleIds.isNotEmpty() && selectedIds.containsAll(allVisibleIds)
                         TextButton(
                             onClick = {
@@ -223,7 +225,7 @@ fun RecentsScreen(
                 }
             }
 
-            if (uiState.items.isEmpty() && (!hasSearchQuery || uiState.matchingContacts.isEmpty())) {
+            if (uiState.groupedItems.isEmpty() && (!hasSearchQuery || uiState.matchingContacts.isEmpty())) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -254,12 +256,18 @@ fun RecentsScreen(
                     )
                 }
             } else {
+                val groupedByDate = remember(uiState.groupedItems) {
+                    val order = listOf(RecentsDateBucket.TODAY, RecentsDateBucket.YESTERDAY, RecentsDateBucket.OLDER)
+                    val map = uiState.groupedItems.groupBy { it.dateBucket }
+                    order.mapNotNull { bucket -> map[bucket]?.let { bucket to it } }
+                }
+
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    if (hasSearchQuery && uiState.items.isNotEmpty() && !isSelectionMode) {
+                    if (hasSearchQuery && uiState.groupedItems.isNotEmpty() && !isSelectionMode) {
                         item {
                             Text(
                                 text = "Recent Calls (${uiState.items.size})",
@@ -270,93 +278,111 @@ fun RecentsScreen(
                         }
                     }
 
-                    items(uiState.items, key = { "log_${it.log.id}" }) { entry ->
-                        val isItemSelected = entry.log.id in selectedIds
-                        val toggleItemSelection = {
-                            selectedIds = if (isItemSelected) {
-                                selectedIds - entry.log.id
-                            } else {
-                                selectedIds + entry.log.id
-                            }
+                    groupedByDate.forEach { (bucket, sectionEntries) ->
+                        item(key = "header_${bucket.name}") {
+                            Text(
+                                text = bucket.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .padding(top = 6.dp, bottom = 2.dp, start = 4.dp)
+                                    .testTag("recents_date_header_${bucket.name.lowercase()}")
+                            )
                         }
 
-                        if (isSelectionMode) {
-                            CallLogCard(
-                                entry = entry,
-                                isSelected = isItemSelected,
-                                isSelectionMode = true,
-                                onClick = toggleItemSelection,
-                                onLongClick = toggleItemSelection,
-                                onInspectHistory = { },
-                                onCallBack = { },
-                                onEditInKeypad = { },
-                                onToggleBlock = { },
-                                onDelete = { }
-                            )
-                        } else {
-                            val dismissState = rememberSwipeToDismissBoxState(
-                                confirmValueChange = { targetValue ->
-                                    if (targetValue == SwipeToDismissBoxValue.EndToStart) {
-                                        pendingSwipeDeleteEntry = entry
-                                    }
-                                    // Always snap back visually; actual deletion happens only on AlertDialog confirmation
-                                    false
+                        items(sectionEntries, key = { it.groupKey }) { group ->
+                            val entry = group.latest
+                            val groupIdsSet = group.groupedIds.toSet()
+                            val isItemSelected = group.groupedIds.all { it in selectedIds }
+                            val toggleItemSelection = {
+                                selectedIds = if (isItemSelected) {
+                                    selectedIds - groupIdsSet
+                                } else {
+                                    selectedIds + groupIdsSet
                                 }
-                            )
-                            SwipeToDismissBox(
-                                state = dismissState,
-                                enableDismissFromStartToEnd = false,
-                                enableDismissFromEndToStart = true,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(18.dp)),
-                                backgroundContent = {
-                                    val isSwipingLeft =
-                                        dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(
-                                                if (isSwipingLeft) {
-                                                    MaterialTheme.colorScheme.errorContainer
-                                                } else {
-                                                    androidx.compose.ui.graphics.Color.Transparent
-                                                }
-                                            )
-                                            .padding(horizontal = 20.dp),
-                                        contentAlignment = Alignment.CenterEnd
-                                    ) {
-                                        if (isSwipingLeft) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.DeleteOutline,
-                                                contentDescription = "Swipe to delete",
-                                                tint = MaterialTheme.colorScheme.onErrorContainer
-                                            )
-                                        }
-                                    }
-                                }
-                            ) {
+                            }
+
+                            if (isSelectionMode) {
                                 CallLogCard(
                                     entry = entry,
-                                    isSelected = false,
-                                    isSelectionMode = false,
-                                    onClick = { onOpenCallHistory(entry.log.remoteHandle) },
-                                    onLongClick = {
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        selectedIds = setOf(entry.log.id)
-                                    },
-                                    onInspectHistory = { onOpenCallHistory(entry.log.remoteHandle) },
-                                    onCallBack = { onCallBack(entry.log.remoteHandle) },
-                                    onEditInKeypad = { onEditInKeypad(entry.log.remoteHandle) },
-                                    onToggleBlock = {
-                                        onToggleBlockNumber(
-                                            entry.log.remoteHandle,
-                                            entry.displayName,
-                                            entry.isBlocked
-                                        )
-                                    },
-                                    onDelete = { onDeleteItem(entry.log.id) }
+                                    callCount = group.callCount,
+                                    isSelected = isItemSelected,
+                                    isSelectionMode = true,
+                                    onClick = toggleItemSelection,
+                                    onLongClick = toggleItemSelection,
+                                    onInspectHistory = { },
+                                    onCallBack = { },
+                                    onEditInKeypad = { },
+                                    onToggleBlock = { },
+                                    onDelete = { }
                                 )
+                            } else {
+                                val dismissState = rememberSwipeToDismissBoxState(
+                                    confirmValueChange = { targetValue ->
+                                        if (targetValue == SwipeToDismissBoxValue.EndToStart) {
+                                            pendingSwipeDeleteGroup = group
+                                        }
+                                        // Always snap back visually; actual deletion happens only on AlertDialog confirmation
+                                        false
+                                    }
+                                )
+                                SwipeToDismissBox(
+                                    state = dismissState,
+                                    enableDismissFromStartToEnd = false,
+                                    enableDismissFromEndToStart = true,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(18.dp)),
+                                    backgroundContent = {
+                                        val isSwipingLeft =
+                                            dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    if (isSwipingLeft) {
+                                                        MaterialTheme.colorScheme.errorContainer
+                                                    } else {
+                                                        androidx.compose.ui.graphics.Color.Transparent
+                                                    }
+                                                )
+                                                .padding(horizontal = 20.dp),
+                                            contentAlignment = Alignment.CenterEnd
+                                        ) {
+                                            if (isSwipingLeft) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.DeleteOutline,
+                                                    contentDescription = "Swipe to delete",
+                                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    CallLogCard(
+                                        entry = entry,
+                                        callCount = group.callCount,
+                                        isSelected = false,
+                                        isSelectionMode = false,
+                                        onClick = { onOpenCallHistory(entry.log.remoteHandle) },
+                                        onLongClick = {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            selectedIds = groupIdsSet
+                                        },
+                                        onInspectHistory = { onOpenCallHistory(entry.log.remoteHandle) },
+                                        onCallBack = { onCallBack(entry.log.remoteHandle) },
+                                        onEditInKeypad = { onEditInKeypad(entry.log.remoteHandle) },
+                                        onToggleBlock = {
+                                            onToggleBlockNumber(
+                                                entry.log.remoteHandle,
+                                                entry.displayName,
+                                                entry.isBlocked
+                                            )
+                                        },
+                                        onDelete = { onDeleteSelected(groupIdsSet) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -387,18 +413,22 @@ fun RecentsScreen(
         }
     }
 
-    pendingSwipeDeleteEntry?.let { target ->
+    pendingSwipeDeleteGroup?.let { target ->
         AlertDialog(
-            onDismissRequest = { pendingSwipeDeleteEntry = null },
+            onDismissRequest = { pendingSwipeDeleteGroup = null },
             title = { Text("Delete History?") },
             text = {
-                Text("Do you want to delete this call log with ${target.displayName}?")
+                if (target.callCount > 1) {
+                    Text("Do you want to delete these ${target.callCount} call logs with ${target.latest.displayName}?")
+                } else {
+                    Text("Do you want to delete this call log with ${target.latest.displayName}?")
+                }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onDeleteItem(target.log.id)
-                        pendingSwipeDeleteEntry = null
+                        onDeleteSelected(target.groupedIds.toSet())
+                        pendingSwipeDeleteGroup = null
                     },
                     modifier = Modifier.testTag("confirm_swipe_delete_recent")
                 ) {
@@ -406,7 +436,7 @@ fun RecentsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingSwipeDeleteEntry = null }) {
+                TextButton(onClick = { pendingSwipeDeleteGroup = null }) {
                     Text("Cancel")
                 }
             }
@@ -601,6 +631,7 @@ private fun MatchingContactCard(
 @Composable
 private fun CallLogCard(
     entry: EnrichedCallLogItem,
+    callCount: Int,
     isSelected: Boolean,
     isSelectionMode: Boolean,
     onClick: () -> Unit,
@@ -721,8 +752,13 @@ private fun CallLogCard(
                             .weight(1f)
                             .padding(end = 8.dp)
                     ) {
+                        val formattedTitle = if (callCount > 1) {
+                            "${entry.displayName} ($callCount)"
+                        } else {
+                            entry.displayName
+                        }
                         Text(
-                            text = entry.displayName,
+                            text = formattedTitle,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = when {
