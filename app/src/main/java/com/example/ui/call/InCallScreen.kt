@@ -2,15 +2,22 @@ package com.example.ui.call
 
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +25,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -27,6 +35,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.BluetoothAudio
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.CallEnd
@@ -46,12 +56,15 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,14 +72,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -74,6 +94,8 @@ import com.example.domain.model.ActiveCallState
 import com.example.domain.model.AudioRouteType
 import com.example.domain.model.CallLifecycleState
 import com.example.ui.components.ContactAvatar
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import com.example.ui.theme.InCallGradientBottom
 import com.example.ui.theme.InCallGradientTop
 import com.example.ui.theme.MonoTelemetryStyle
@@ -101,6 +123,7 @@ fun InCallScreen(
     onAnswer: () -> Unit,
     onDecline: () -> Unit,
     onEndCall: () -> Unit,
+    onMinimize: (() -> Unit)? = null,
     isNearEar: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -162,31 +185,54 @@ fun InCallScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Line / Hi-Fi Telemetry Header
+            // Top Line / Hi-Fi Telemetry Header with Minimize button
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Color.White.copy(alpha = 0.12f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (onMinimize != null) {
+                        IconButton(
+                            onClick = onMinimize,
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .size(48.dp)
+                                .testTag("in_call_minimize_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.KeyboardArrowDown,
+                                contentDescription = "Minimize call window",
+                                tint = Color.White,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color.White.copy(alpha = 0.12f),
+                        modifier = Modifier.align(Alignment.Center)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.GraphicEq,
-                            contentDescription = null,
-                            tint = SignalConnected,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = callState.routeBadge.ifBlank { callState.sourceType.label },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.White
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.GraphicEq,
+                                contentDescription = null,
+                                tint = SignalConnected,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = callState.routeBadge.ifBlank { callState.sourceType.label },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 
@@ -266,15 +312,87 @@ fun InCallScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    ContactAvatar(
-                        displayName = callState.displayName.ifBlank { callState.remoteHandle },
-                        photoUri = callState.remotePhotoUri,
-                        size = if (hasPhoto) 136.dp else 104.dp,
-                        fontSize = if (hasPhoto) 40.sp else 34.sp,
-                        containerColor = Color.White.copy(alpha = 0.14f),
-                        contentColor = Color.White,
-                        borderColor = if (hasPhoto) Color.White.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.28f)
-                    )
+                    val avatarSize = if (hasPhoto) 136.dp else 108.dp
+                    if (callState.lifecycle == CallLifecycleState.RINGING_INCOMING) {
+                        val ringTransition = rememberInfiniteTransition(label = "incoming_rings")
+                        val ring1Scale by ringTransition.animateFloat(
+                            initialValue = 1.0f,
+                            targetValue = 1.52f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(1700, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Restart
+                            ),
+                            label = "ring1_scale"
+                        )
+                        val ring1Alpha by ringTransition.animateFloat(
+                            initialValue = 0.48f,
+                            targetValue = 0f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(1700, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Restart
+                            ),
+                            label = "ring1_alpha"
+                        )
+                        val ring2Scale by ringTransition.animateFloat(
+                            initialValue = 1.0f,
+                            targetValue = 1.52f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(1700, delayMillis = 650, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Restart
+                            ),
+                            label = "ring2_scale"
+                        )
+                        val ring2Alpha by ringTransition.animateFloat(
+                            initialValue = 0.42f,
+                            targetValue = 0f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(1700, delayMillis = 650, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Restart
+                            ),
+                            label = "ring2_alpha"
+                        )
+
+                        Box(
+                            modifier = Modifier.size(avatarSize + 64.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(avatarSize)
+                                    .scale(ring1Scale)
+                                    .clip(CircleShape)
+                                    .border(2.dp, SignalConnected.copy(alpha = ring1Alpha), CircleShape)
+                                    .background(SignalConnected.copy(alpha = ring1Alpha * 0.25f))
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(avatarSize)
+                                    .scale(ring2Scale)
+                                    .clip(CircleShape)
+                                    .border(2.dp, Color.White.copy(alpha = ring2Alpha), CircleShape)
+                                    .background(Color.White.copy(alpha = ring2Alpha * 0.18f))
+                            )
+                            ContactAvatar(
+                                displayName = callState.displayName.ifBlank { callState.remoteHandle },
+                                photoUri = callState.remotePhotoUri,
+                                size = avatarSize,
+                                fontSize = if (hasPhoto) 40.sp else 36.sp,
+                                containerColor = Color.White.copy(alpha = 0.16f),
+                                contentColor = Color.White,
+                                borderColor = Color.White.copy(alpha = 0.52f)
+                            )
+                        }
+                    } else {
+                        ContactAvatar(
+                            displayName = callState.displayName.ifBlank { callState.remoteHandle },
+                            photoUri = callState.remotePhotoUri,
+                            size = avatarSize,
+                            fontSize = if (hasPhoto) 40.sp else 34.sp,
+                            containerColor = Color.White.copy(alpha = 0.14f),
+                            contentColor = Color.White,
+                            borderColor = if (hasPhoto) Color.White.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.28f)
+                        )
+                    }
 
                     Text(
                         text = callState.displayName.ifBlank { callState.remoteHandle },
@@ -336,51 +454,13 @@ fun InCallScreen(
                 }
             }
 
-            // Bottom Action Controls (Incoming vs Keypad vs Standard 6-tile Grid)
+            // Bottom Action Controls (Phone by Google Swipe Pill vs Keypad vs Standard 6-tile Grid)
             if (callState.lifecycle == CallLifecycleState.RINGING_INCOMING) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        FilledIconButton(
-                            onClick = onDecline,
-                            modifier = Modifier
-                                .size(72.dp)
-                                .testTag("incoming_decline_button"),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = SignalRecording,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            Icon(Icons.Rounded.CallEnd, contentDescription = "Decline call", modifier = Modifier.size(32.dp))
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Decline", color = Color.White, style = MaterialTheme.typography.labelLarge)
-                    }
-
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        FilledIconButton(
-                            onClick = onAnswer,
-                            modifier = Modifier
-                                .size(72.dp)
-                                .testTag("incoming_answer_button"),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = SignalConnected,
-                                contentColor = Color.White
-                            )
-                        ) {
-                            Icon(Icons.Rounded.Call, contentDescription = "Answer call", modifier = Modifier.size(32.dp))
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Answer", color = Color.White, style = MaterialTheme.typography.labelLarge)
-                    }
-                }
+                IncomingSwipeAnswerBar(
+                    onAnswer = onAnswer,
+                    onDecline = onDecline,
+                    modifier = Modifier.padding(bottom = 24.dp)
+                )
             } else if (showDtmfPad) {
                 // Google Phone / Zoiper-style full regular In-Call Dialpad
                 Column(
@@ -721,4 +801,414 @@ private fun formatElapsed(totalSeconds: Int): String {
     val m = totalSeconds / 60
     val s = totalSeconds % 60
     return "%02d:%02d".format(m, s)
+}
+
+@Composable
+private fun IncomingSwipeAnswerBar(
+    onAnswer: () -> Unit,
+    onDecline: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    var dragOffsetPx by remember { mutableFloatStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    var triggered by remember { mutableStateOf(false) }
+
+    val animatedOffsetPx by animateFloatAsState(
+        targetValue = dragOffsetPx,
+        animationSpec = if (isDragging) {
+            spring(stiffness = Spring.StiffnessHigh)
+        } else {
+            spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium)
+        },
+        label = "swipe_pill_offset"
+    )
+
+    val idleTransition = rememberInfiniteTransition(label = "swipe_idle_pulse")
+    val idleArrowAlpha by idleTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(tween(850), RepeatMode.Reverse),
+        label = "swipe_arrow_alpha"
+    )
+    val thumbBreathScale by idleTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "thumb_breath"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .widthIn(max = 360.dp)
+                .fillMaxWidth()
+                .height(78.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            val thumbSize = 62.dp
+            val edgePadding = 8.dp
+            val maxDragPx = with(density) {
+                ((maxWidth - thumbSize) / 2f - edgePadding).coerceAtLeast(60.dp).toPx()
+            }
+            val triggerThresholdPx = maxDragPx * 0.68f
+            val progress = (animatedOffsetPx / maxDragPx).coerceIn(-1f, 1f)
+
+            val trackColor = when {
+                progress > 0.05f -> lerp(
+                    Color.White.copy(alpha = 0.14f),
+                    SignalConnected.copy(alpha = 0.92f),
+                    progress
+                )
+                progress < -0.05f -> lerp(
+                    Color.White.copy(alpha = 0.14f),
+                    SignalRecording.copy(alpha = 0.92f),
+                    abs(progress)
+                )
+                else -> Color.White.copy(alpha = 0.14f)
+            }
+
+            Surface(
+                shape = RoundedCornerShape(39.dp),
+                color = trackColor,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(39.dp))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Left Endpoint (Swipe Left or Tap to Decline)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .clip(CircleShape)
+                            .clickable(enabled = !triggered) {
+                                triggered = true
+                                onDecline()
+                            }
+                            .minimumInteractiveComponentSize()
+                            .padding(horizontal = 6.dp, vertical = 6.dp)
+                            .testTag("incoming_decline_button")
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(SignalRecording.copy(alpha = 0.28f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.CallEnd,
+                                contentDescription = "Decline call",
+                                tint = if (progress < -0.5f) Color.White else Color(0xFFFF8A80),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = idleArrowAlpha),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Right Endpoint (Swipe Right or Tap to Answer)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .clip(CircleShape)
+                            .clickable(enabled = !triggered) {
+                                triggered = true
+                                onAnswer()
+                            }
+                            .minimumInteractiveComponentSize()
+                            .padding(horizontal = 6.dp, vertical = 6.dp)
+                            .testTag("incoming_answer_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = idleArrowAlpha),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(SignalConnected.copy(alpha = 0.28f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Call,
+                                contentDescription = "Answer call",
+                                tint = if (progress > 0.5f) Color.White else Color(0xFF81C995),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    // Draggable Center Handle
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White,
+                        shadowElevation = 6.dp,
+                        modifier = Modifier
+                            .offset { IntOffset(animatedOffsetPx.roundToInt(), 0) }
+                            .scale(if (isDragging) 1.08f else thumbBreathScale)
+                            .size(thumbSize)
+                            .pointerInput(maxDragPx) {
+                                detectHorizontalDragGestures(
+                                    onDragStart = { isDragging = true },
+                                    onDragCancel = {
+                                        isDragging = false
+                                        dragOffsetPx = 0f
+                                    },
+                                    onDragEnd = {
+                                        isDragging = false
+                                        if (!triggered) {
+                                            when {
+                                                dragOffsetPx >= triggerThresholdPx -> {
+                                                    triggered = true
+                                                    dragOffsetPx = maxDragPx
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    onAnswer()
+                                                }
+                                                dragOffsetPx <= -triggerThresholdPx -> {
+                                                    triggered = true
+                                                    dragOffsetPx = -maxDragPx
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    onDecline()
+                                                }
+                                                else -> dragOffsetPx = 0f
+                                            }
+                                        }
+                                    },
+                                    onHorizontalDrag = { _, dragAmount ->
+                                        if (!triggered) {
+                                            val prev = dragOffsetPx
+                                            val next = (prev + dragAmount).coerceIn(-maxDragPx, maxDragPx)
+                                            if (abs(prev) < triggerThresholdPx && abs(next) >= triggerThresholdPx) {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            }
+                                            dragOffsetPx = next
+                                        }
+                                    }
+                                )
+                            }
+                            .testTag("incoming_swipe_handle")
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                            Icon(
+                                imageVector = if (progress < -0.35f) Icons.Rounded.CallEnd else Icons.Rounded.Call,
+                                contentDescription = "Swipe right to answer or left to decline",
+                                tint = when {
+                                    progress > 0.25f -> SignalConnected
+                                    progress < -0.25f -> SignalRecording
+                                    else -> InCallGradientTop
+                                },
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Swipe left to decline",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.72f)
+            )
+            Text(
+                text = "Swipe right to answer",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.72f)
+            )
+        }
+    }
+}
+
+/**
+ * Phone by Google style floating call mini window shown inside the app when a call is minimized.
+ */
+@Composable
+fun CallMiniWindowCard(
+    callState: ActiveCallState,
+    elapsedSeconds: Int,
+    onExpand: () -> Unit,
+    onAnswer: () -> Unit,
+    onDecline: () -> Unit,
+    onToggleMute: () -> Unit,
+    onEndCall: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isIncoming = callState.lifecycle == CallLifecycleState.RINGING_INCOMING
+    val pulseTransition = rememberInfiniteTransition(label = "mini_window_pulse")
+    val pulseAlpha by pulseTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(tween(750), RepeatMode.Reverse),
+        label = "mini_pulse_alpha"
+    )
+
+    val statusText = when (callState.lifecycle) {
+        CallLifecycleState.RINGING_INCOMING -> "Incoming • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
+        CallLifecycleState.DIALING -> "Dialing • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
+        CallLifecycleState.RINGING_OUTGOING -> "Ringing • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
+        CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
+        CallLifecycleState.ACTIVE -> "${formatElapsed(elapsedSeconds)} • ${callState.routeBadge.ifBlank { callState.sourceType.label }}"
+        else -> callState.routeBadge
+    }
+
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = InCallGradientTop.copy(alpha = 0.96f),
+        shadowElevation = 12.dp,
+        modifier = modifier
+            .widthIn(max = 540.dp)
+            .fillMaxWidth()
+            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(28.dp))
+            .clip(RoundedCornerShape(28.dp))
+            .clickable(onClick = onExpand)
+            .testTag("call_mini_window")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(contentAlignment = Alignment.BottomEnd) {
+                ContactAvatar(
+                    displayName = callState.displayName.ifBlank { callState.remoteHandle },
+                    photoUri = callState.remotePhotoUri,
+                    size = 44.dp,
+                    fontSize = 16.sp,
+                    containerColor = Color.White.copy(alpha = 0.16f),
+                    contentColor = Color.White,
+                    borderColor = SignalConnected.copy(alpha = 0.65f)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(11.dp)
+                        .clip(CircleShape)
+                        .background(if (isIncoming) SignalConnected.copy(alpha = pulseAlpha) else SignalConnected)
+                        .border(1.5.dp, InCallGradientTop, CircleShape)
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = callState.displayName.ifBlank { callState.remoteHandle },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isIncoming) SignalConnected else Color.White.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (isIncoming) {
+                FilledIconButton(
+                    onClick = onDecline,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_window_decline_button"),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = SignalRecording,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CallEnd,
+                        contentDescription = "Decline call",
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                FilledIconButton(
+                    onClick = onAnswer,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_window_answer_button"),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = SignalConnected,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Call,
+                        contentDescription = "Answer call",
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            } else {
+                FilledIconButton(
+                    onClick = onToggleMute,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_window_mute_button"),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = if (callState.isMuted) Color.White else Color.White.copy(alpha = 0.16f),
+                        contentColor = if (callState.isMuted) InCallGradientTop else Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (callState.isMuted) Icons.Rounded.MicOff else Icons.Rounded.Mic,
+                        contentDescription = if (callState.isMuted) "Unmute" else "Mute",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                FilledIconButton(
+                    onClick = onEndCall,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_window_end_button"),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = SignalRecording,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CallEnd,
+                        contentDescription = "End call",
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+        }
+    }
 }

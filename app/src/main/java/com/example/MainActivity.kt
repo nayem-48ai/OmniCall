@@ -6,16 +6,25 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Contacts
 import androidx.compose.material.icons.outlined.Dialpad
@@ -51,6 +60,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.data.preferences.AppSettingsState
 import com.example.domain.model.CallLifecycleState
+import com.example.ui.call.CallMiniWindowCard
 import com.example.ui.call.InCallScreen
 import com.example.ui.components.OutgoingRoutePickerSheet
 import com.example.ui.contacts.ContactsScreen
@@ -110,6 +120,7 @@ class MainActivity : ComponentActivity() {
 
             OmniCallTheme(
                 themePreference = settings.themePreference,
+                colorPalette = settings.colorPalette,
                 dynamicColor = settings.dynamicColorEnabled
             ) {
                 OmniCallRoot(
@@ -166,6 +177,7 @@ private fun OmniCallRoot(
     val activeCall by app.container.activeCallCoordinator.activeCall.collectAsStateWithLifecycle()
     val elapsedSeconds by app.container.activeCallCoordinator.elapsedSeconds.collectAsStateWithLifecycle()
     val isNearEar by app.container.activeCallCoordinator.isNearEar.collectAsStateWithLifecycle()
+    val isCallUiMinimized by app.container.activeCallCoordinator.isCallUiMinimized.collectAsStateWithLifecycle()
 
     val defaultDialerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -230,11 +242,15 @@ private fun OmniCallRoot(
         }
     }
 
-    // Active / Incoming Call full-screen overlay (replaces Google Phone UI when OmniCall is Default Dialer)
-    if (activeCall.lifecycle != CallLifecycleState.IDLE &&
+    val hasLiveCall = activeCall.lifecycle != CallLifecycleState.IDLE &&
         activeCall.lifecycle != CallLifecycleState.ENDED
-    ) {
-        val coordinator = app.container.activeCallCoordinator
+    val coordinator = app.container.activeCallCoordinator
+
+    // Active / Incoming Call full-screen overlay (replaces Google Phone UI when OmniCall is Default Dialer)
+    if (hasLiveCall && !isCallUiMinimized) {
+        BackHandler {
+            coordinator.minimizeCallUi()
+        }
         InCallScreen(
             callState = activeCall,
             elapsedSeconds = elapsedSeconds,
@@ -246,7 +262,8 @@ private fun OmniCallRoot(
             onSendDtmf = coordinator::sendDtmf,
             onAnswer = coordinator::answerIncomingCall,
             onDecline = coordinator::declineIncomingCall,
-            onEndCall = coordinator::endActiveCall
+            onEndCall = coordinator::endActiveCall,
+            onMinimize = coordinator::minimizeCallUi
         )
         return
     }
@@ -426,6 +443,27 @@ private fun OmniCallRoot(
                     }
                 }
             }
+        }
+
+        // Phone-by-Google-style floating call mini window when call UI is minimized
+        AnimatedVisibility(
+            visible = hasLiveCall && isCallUiMinimized,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            CallMiniWindowCard(
+                callState = activeCall,
+                elapsedSeconds = elapsedSeconds,
+                onExpand = coordinator::expandCallUi,
+                onAnswer = coordinator::answerIncomingCall,
+                onDecline = coordinator::declineIncomingCall,
+                onToggleMute = coordinator::toggleMute,
+                onEndCall = coordinator::endActiveCall
+            )
         }
     }
 

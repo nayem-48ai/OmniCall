@@ -8,12 +8,21 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.media.AudioAttributes
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.ui.call.IncomingCallActivity
@@ -42,7 +51,7 @@ class CallNotificationManager(private val context: Context) {
                 context.getString(R.string.notification_channel_incoming_name),
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Full-screen incoming cellular and SIP call alerts"
+                description = "Full-screen and heads-up incoming cellular and SIP call alerts"
                 setSound(
                     ringtoneUri,
                     AudioAttributes.Builder()
@@ -69,7 +78,12 @@ class CallNotificationManager(private val context: Context) {
         }
     }
 
-    fun showIncomingCallNotification(callerName: String, callerHandle: String, lineBadge: String) {
+    fun showIncomingCallNotification(
+        callerName: String,
+        callerHandle: String,
+        lineBadge: String,
+        callerPhotoUri: String? = null
+    ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -106,15 +120,39 @@ class CallNotificationManager(private val context: Context) {
         )
 
         val displayTitle = callerName.ifBlank { callerHandle.ifBlank { "Incoming Call" } }
-        val callerPerson = Person.Builder()
+        val avatarBitmap = loadCircularCallerAvatar(callerPhotoUri)
+
+        val personBuilder = Person.Builder()
             .setName(displayTitle)
             .setImportant(true)
-            .build()
+        if (avatarBitmap != null) {
+            personBuilder.setIcon(IconCompat.createWithBitmap(avatarBitmap))
+        }
+        val callerPerson = personBuilder.build()
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_INCOMING)
+        val callStyle = NotificationCompat.CallStyle.forIncomingCall(callerPerson, declinePi, answerPi)
+            .setAnswerButtonColorHint(0xFF1E8E3E.toInt())
+            .setDeclineButtonColorHint(0xFFD93025.toInt())
+
+        val subtitle = buildString {
+            append("Incoming")
+            if (lineBadge.isNotBlank()) {
+                append(" • ")
+                append(lineBadge)
+            }
+            if (callerHandle.isNotBlank() && callerHandle != displayTitle) {
+                append(" • ")
+                append(callerHandle)
+            }
+        }
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_INCOMING)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle(displayTitle)
-            .setContentText("Incoming $lineBadge • $callerHandle")
+            .setContentText(subtitle)
+            .setSubText(lineBadge.ifBlank { "OmniCall" })
+            .setColor(0xFF1A73E8.toInt())
+            .setColorized(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -122,13 +160,40 @@ class CallNotificationManager(private val context: Context) {
             .setAutoCancel(false)
             .setContentIntent(fullScreenPi)
             .setFullScreenIntent(fullScreenPi, true)
-            .setStyle(NotificationCompat.CallStyle.forIncomingCall(callerPerson, declinePi, answerPi))
-            .build()
-            .apply {
-                flags = flags or Notification.FLAG_INSISTENT
-            }
+            .setStyle(callStyle)
+
+        if (avatarBitmap != null) {
+            builder.setLargeIcon(avatarBitmap)
+        }
+
+        val notification = builder.build().apply {
+            flags = flags or Notification.FLAG_INSISTENT
+        }
 
         notificationManager.notify(NOTIF_ID_INCOMING, notification)
+    }
+
+    private fun loadCircularCallerAvatar(photoUri: String?): Bitmap? {
+        if (photoUri.isNullOrBlank()) return null
+        return runCatching {
+            val uri = Uri.parse(photoUri)
+            val decoded = context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream)
+            } ?: return@runCatching null
+            val targetSize = 192
+            val scaled = Bitmap.createScaledBitmap(decoded, targetSize, targetSize, true)
+            if (scaled != decoded) decoded.recycle()
+            val output = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(output)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            val rect = Rect(0, 0, targetSize, targetSize)
+            canvas.drawARGB(0, 0, 0, 0)
+            canvas.drawCircle(targetSize / 2f, targetSize / 2f, targetSize / 2f, paint)
+            paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+            canvas.drawBitmap(scaled, rect, rect, paint)
+            if (scaled != output) scaled.recycle()
+            output
+        }.getOrNull()
     }
 
     fun buildOngoingCallNotification(
@@ -160,6 +225,7 @@ class CallNotificationManager(private val context: Context) {
             .setContentText("$recPrefix$subtitle")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setColor(0xFF1A73E8.toInt())
             .setContentIntent(openPi)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, context.getString(R.string.in_call_end), hangupPi)
             .build()

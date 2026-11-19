@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.telephony.TelephonyManager
 import com.example.data.repository.SipAccountRepository
 import com.example.domain.ai.CallEventBus
 import com.example.domain.ai.OmniCallEvent
@@ -38,7 +39,7 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
 sealed interface SipSignalingEvent {
-    data class OutgoingRinging(val callId: String) : SipSignalingEvent
+    data class OutgoingRinging(val callId: String, val remoteSdp: SdpMediaSpec? = null) : SipSignalingEvent
     data class CallConnected(val callId: String, val remoteSdp: SdpMediaSpec?) : SipSignalingEvent
     data class IncomingInvite(
         val callId: String,
@@ -56,6 +57,18 @@ sealed interface SipSignalingEvent {
         val beforeEarlyRinging: Boolean = false
     ) : SipSignalingEvent
 }
+
+data class SipNetworkHealthResult(
+    val isReachable: Boolean,
+    val networkLabel: String,
+    val localIp: String,
+    val proxyHost: String,
+    val transport: SipTransport,
+    val port: Int,
+    val latencyMs: Long? = null,
+    val sipStatusCode: Int? = null,
+    val summary: String
+)
 
 sealed interface SipTransportValidationResult {
     data class Valid(
@@ -134,6 +147,15 @@ class SipClientEngine(
     @Volatile private var registerAuthAttempts: Int = 0
     @Volatile private var activeNetworkHandle: Long? = null
     @Volatile private var lastTransportError: String? = null
+    @Volatile private var lastNetworkHealthCache: CachedNetworkHealth? = null
+
+    private data class CachedNetworkHealth(
+        val accountId: Long,
+        val networkHandle: Long?,
+        val localIp: String,
+        val checkedAtMs: Long,
+        val result: SipNetworkHealthResult
+    )
 
     private val dialogs = ConcurrentHashMap<String, ActiveSipDialog>()
 
@@ -673,7 +695,7 @@ class SipClientEngine(
             180, 183 -> {
                 dialog.gotEarlyRinging = true
                 SipMessageCodec.parseSdp(msg.body)?.let { dialog.remoteSdp = it }
-                _signalingEvents.emit(SipSignalingEvent.OutgoingRinging(callId))
+                _signalingEvents.emit(SipSignalingEvent.OutgoingRinging(callId, dialog.remoteSdp))
             }
             401, 407 -> {
                 val respTo = msg.firstHeader("To") ?: dialog.toHeader
@@ -1273,6 +1295,185 @@ class SipClientEngine(
     }
 
     fun getLastTransportError(): String? = lastTransportError
+
+    fun describeCurrentNetwork(): String {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeNet = cm?.activeNetwork
+        val caps = cm?.getNetworkCapabilities(activeNet)
+        val hasVpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        val base = when {
+            caps == null -> "Offline / No Internet"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> {
+                val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                val carrier = runCatching { tm?.networkOperatorName?.trim() }.getOrNull().orEmpty()
+                if (carrier.isNotBlank()) "Mobile ($carrier)" else "Mobile Data"
+            }
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            else -> "Active Network"
+        }
+        return if (hasVpn) "$base + VPN" else base
+    }
+
+    /**
+     * Checks live SIP server reachability on the current ISP / Wi-Fi / Mobile SIM connection
+     * using a lightweight RFC 3261 OPTIONS ping before placing a call or from Settings.
+     */
+    suspend fun checkSipNetworkHealth(
+        account: SipAccountModel,
+        forceFreshProbe: Boolean = false
+    ): SipNetworkHealthResult = withContext(Dispatchers.IO) {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val netHandle = cm?.activeNetwork?.networkHandle
+        val networkLabel = describeCurrentNetwork()
+        val proxyHost = account.effectiveProxyHost()
+
+        val resolvedAddr = runCatching {
+            InetAddress.getAllByName(proxyHost)
+                .firstOrNull { it is Inet4Address }
+                ?: InetAddress.getByName(proxyHost)
+        }.getOrElse { err ->
+            return@withContext SipNetworkHealthResult(
+                isReachable = false,
+                networkLabel = networkLabel,
+                localIp = localIp,
+                proxyHost = proxyHost,
+                transport = account.transport,
+                port = account.port,
+                summary = "$networkLabel cannot resolve $proxyHost (${err.message ?: "DNS error"})"
+            )
+        }
+
+        val currentIp = SipAutoConfigEngine.resolveLocalIpv4ForRemote(resolvedAddr, account.port)
+        val now = System.currentTimeMillis()
+        val cached = lastNetworkHealthCache
+        if (!forceFreshProbe &&
+            cached != null &&
+            cached.accountId == account.id &&
+            cached.networkHandle == netHandle &&
+            cached.localIp == currentIp &&
+            cached.result.isReachable &&
+            (now - cached.checkedAtMs) < 25_000L
+        ) {
+            return@withContext cached.result
+        }
+
+        val startMs = System.currentTimeMillis()
+        val statusResult = runCatching {
+            when (account.transport) {
+                SipTransport.UDP -> {
+                    DatagramSocket().use { probe ->
+                        probe.soTimeout = 1350
+                        val req = SipMessageCodec.buildOptionsRequest(
+                            domain = account.domain,
+                            port = account.port,
+                            username = account.username,
+                            localIp = currentIp,
+                            localPort = probe.localPort,
+                            transport = SipTransport.UDP
+                        )
+                        val bytes = req.toByteArray(Charsets.UTF_8)
+                        probe.send(DatagramPacket(bytes, bytes.size, resolvedAddr, account.port))
+                        val rxBuf = ByteArray(4096)
+                        val rxPacket = DatagramPacket(rxBuf, rxBuf.size)
+                        probe.receive(rxPacket)
+                        val raw = String(rxPacket.data, 0, rxPacket.length, Charsets.UTF_8)
+                        SipMessageCodec.parse(raw)?.statusCode ?: 200
+                    }
+                }
+                SipTransport.TCP -> {
+                    Socket().use { probe ->
+                        probe.connect(InetSocketAddress(resolvedAddr, account.port), 1500)
+                        probe.soTimeout = 1350
+                        val req = SipMessageCodec.buildOptionsRequest(
+                            domain = account.domain,
+                            port = account.port,
+                            username = account.username,
+                            localIp = currentIp,
+                            localPort = probe.localPort,
+                            transport = SipTransport.TCP
+                        )
+                        val out = probe.getOutputStream()
+                        out.write(req.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                        val rxBuf = ByteArray(4096)
+                        val read = probe.getInputStream().read(rxBuf)
+                        if (read > 0) {
+                            val raw = String(rxBuf, 0, read, Charsets.UTF_8)
+                            SipMessageCodec.parse(raw)?.statusCode ?: 200
+                        } else {
+                            200
+                        }
+                    }
+                }
+                SipTransport.TLS -> {
+                    val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                    (factory.createSocket() as SSLSocket).use { probe ->
+                        probe.connect(InetSocketAddress(resolvedAddr, account.port), 1800)
+                        probe.soTimeout = 1500
+                        probe.startHandshake()
+                        val req = SipMessageCodec.buildOptionsRequest(
+                            domain = account.domain,
+                            port = account.port,
+                            username = account.username,
+                            localIp = currentIp,
+                            localPort = probe.localPort,
+                            transport = SipTransport.TLS
+                        )
+                        val out = probe.getOutputStream()
+                        out.write(req.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                        val rxBuf = ByteArray(4096)
+                        val read = probe.getInputStream().read(rxBuf)
+                        if (read > 0) {
+                            val raw = String(rxBuf, 0, read, Charsets.UTF_8)
+                            SipMessageCodec.parse(raw)?.statusCode ?: 200
+                        } else {
+                            200
+                        }
+                    }
+                }
+            }
+        }.getOrNull()
+
+        val latency = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+        val result = if (statusResult != null) {
+            SipNetworkHealthResult(
+                isReachable = true,
+                networkLabel = networkLabel,
+                localIp = currentIp,
+                proxyHost = proxyHost,
+                transport = account.transport,
+                port = account.port,
+                latencyMs = latency,
+                sipStatusCode = statusResult,
+                summary = "$networkLabel • ${account.transport.label}:${account.port} Ready (${latency}ms, SIP $statusResult)"
+            )
+        } else {
+            SipNetworkHealthResult(
+                isReachable = false,
+                networkLabel = networkLabel,
+                localIp = currentIp,
+                proxyHost = proxyHost,
+                transport = account.transport,
+                port = account.port,
+                latencyMs = null,
+                sipStatusCode = null,
+                summary = "$networkLabel timed out reaching $proxyHost:${account.port} (${account.transport.label}) — ISP/SIM may block SIP"
+            )
+        }
+
+        if (result.isReachable) {
+            lastNetworkHealthCache = CachedNetworkHealth(
+                accountId = account.id,
+                networkHandle = netHandle,
+                localIp = currentIp,
+                checkedAtMs = now,
+                result = result
+            )
+        }
+        result
+    }
 
     fun stopTransport() {
         stopTransportLocked()

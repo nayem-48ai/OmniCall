@@ -15,6 +15,8 @@ import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
 import com.example.domain.model.SipTransport
 import com.example.sip.AutoConfigProgress
+import com.example.sip.SipNetworkHealthResult
+import com.example.ui.theme.AppColorPalette
 import com.example.ui.theme.ThemePreference
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +56,9 @@ data class SipSettingsUiState(
     val showAddAccountSheet: Boolean = false,
     val form: SipFormState = SipFormState(),
     val managedAccount: SipAccountModel? = null,
-    val isCheckingBalance: Boolean = false
+    val isCheckingBalance: Boolean = false,
+    val networkHealth: SipNetworkHealthResult? = null,
+    val isCheckingNetwork: Boolean = false
 )
 
 class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
@@ -68,6 +72,8 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     private val _form = MutableStateFlow(SipFormState())
     private val _managedAccountId = MutableStateFlow<Long?>(null)
     private val _isCheckingBalance = MutableStateFlow(false)
+    private val _networkHealth = MutableStateFlow<SipNetworkHealthResult?>(null)
+    private val _isCheckingNetwork = MutableStateFlow(false)
 
     private var discoveryJob: Job? = null
 
@@ -108,6 +114,10 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         )
     }.combine(_isCheckingBalance) { state, checking ->
         state.copy(isCheckingBalance = checking)
+    }.combine(_networkHealth) { state, health ->
+        state.copy(networkHealth = health)
+    }.combine(_isCheckingNetwork) { state, checkingNet ->
+        state.copy(isCheckingNetwork = checkingNet)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -396,9 +406,26 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    fun setColorPalette(palette: AppColorPalette) {
+        viewModelScope.launch {
+            container.preferencesRepository.setColorPalette(palette)
+        }
+    }
+
     fun setDynamicColor(enabled: Boolean) {
         viewModelScope.launch {
             container.preferencesRepository.setDynamicColor(enabled)
+        }
+    }
+
+    fun checkSipNetworkHealth(account: SipAccountModel) {
+        viewModelScope.launch {
+            _isCheckingNetwork.value = true
+            _networkHealth.value = container.sipClientEngine.checkSipNetworkHealth(
+                account = account,
+                forceFreshProbe = true
+            )
+            _isCheckingNetwork.value = false
         }
     }
 }

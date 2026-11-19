@@ -1,6 +1,8 @@
 package com.example.ui.settings
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -23,10 +28,12 @@ import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SimCard
@@ -58,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -68,6 +76,8 @@ import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.SipAccountModel
 import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
+import com.example.sip.SipNetworkHealthResult
+import com.example.ui.theme.AppColorPalette
 import com.example.ui.theme.SignalConnected
 import com.example.ui.theme.SignalWarning
 import com.example.ui.theme.ThemePreference
@@ -423,6 +433,10 @@ fun SipSettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
+                        val primarySip = uiState.accounts.firstOrNull { it.isEnabled && it.isDefault }
+                            ?: uiState.accounts.firstOrNull { it.isEnabled }
+                            ?: uiState.accounts.first()
+
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             uiState.accounts.forEach { acc ->
                                 SipAccountRow(
@@ -434,6 +448,13 @@ fun SipSettingsScreen(
                                     onDelete = { viewModel.deleteAccount(acc.id) }
                                 )
                             }
+
+                            SipNetworkHealthBanner(
+                                targetAccount = primarySip,
+                                health = uiState.networkHealth,
+                                isChecking = uiState.isCheckingNetwork,
+                                onTestNetwork = { viewModel.checkSipNetworkHealth(primarySip) }
+                            )
                         }
                     }
                 }
@@ -452,6 +473,74 @@ fun SipSettingsScreen(
                             )
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Color Theme",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(AppColorPalette.entries, key = { it.name }) { palette ->
+                            val selected = !uiState.settings.dynamicColorEnabled &&
+                                uiState.settings.colorPalette == palette
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (selected) {
+                                    palette.swatchHex.copy(alpha = 0.16f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                },
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .border(
+                                        width = if (selected) 1.5.dp else 1.dp,
+                                        color = if (selected) palette.swatchHex else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                                        shape = RoundedCornerShape(16.dp)
+                                    )
+                                    .clickable { viewModel.setColorPalette(palette) }
+                                    .testTag("color_palette_${palette.name.lowercase()}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .clip(CircleShape)
+                                            .background(palette.swatchHex),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (selected) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Check,
+                                                contentDescription = "${palette.label} selected",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = palette.label,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
                     AudioToggleRow(
                         label = "Material You Dynamic Color",
                         description = "Adapt palette to device wallpaper (Android 12+)",
@@ -479,6 +568,8 @@ fun SipSettingsScreen(
         SipAccountManageSheet(
             account = managed,
             isCheckingBalance = uiState.isCheckingBalance,
+            networkHealth = uiState.networkHealth,
+            isCheckingNetwork = uiState.isCheckingNetwork,
             onSaveBalanceSettings = { preset, url, showInKeypad, checkNow ->
                 viewModel.saveAccountBalanceSettings(
                     accountId = managed.id,
@@ -489,6 +580,7 @@ fun SipSettingsScreen(
                 )
             },
             onCheckBalanceNow = { viewModel.checkAccountBalance(managed) },
+            onTestNetwork = { viewModel.checkSipNetworkHealth(managed) },
             onReRegister = { viewModel.reRegisterAccount(managed) },
             onSetDefault = { viewModel.setDefaultSipAccount(managed.id) },
             onDelete = {
@@ -497,6 +589,80 @@ fun SipSettingsScreen(
             },
             onDismiss = viewModel::closeManageAccount
         )
+    }
+}
+
+@Composable
+private fun SipNetworkHealthBanner(
+    targetAccount: SipAccountModel,
+    health: SipNetworkHealthResult?,
+    isChecking: Boolean,
+    onTestNetwork: () -> Unit
+) {
+    val containerColor = when {
+        health == null -> MaterialTheme.colorScheme.surface
+        health.isReachable -> SignalConnected.copy(alpha = 0.14f)
+        else -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+    }
+    val accentColor = when {
+        health == null -> MaterialTheme.colorScheme.primary
+        health.isReachable -> SignalConnected
+        else -> MaterialTheme.colorScheme.error
+    }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = containerColor,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.NetworkCheck,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(22.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (health == null) {
+                        "ISP / Carrier SIP Compatibility"
+                    } else if (health.isReachable) {
+                        "Network Ready • ${health.networkLabel}"
+                    } else {
+                        "Network Timeout • ${health.networkLabel}"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = accentColor
+                )
+                Text(
+                    text = health?.summary
+                        ?: "Test whether current Wi-Fi ISP or mobile SIM allows ${targetAccount.effectiveProxyHost()}:${targetAccount.port}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            FilledTonalButton(
+                onClick = onTestNetwork,
+                enabled = !isChecking,
+                modifier = Modifier.testTag("sip_test_network_button")
+            ) {
+                if (isChecking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text("Test ISP", maxLines = 1, softWrap = false)
+                }
+            }
+        }
     }
 }
 
@@ -715,8 +881,11 @@ private fun SipAccountRow(
 private fun SipAccountManageSheet(
     account: SipAccountModel,
     isCheckingBalance: Boolean,
+    networkHealth: SipNetworkHealthResult?,
+    isCheckingNetwork: Boolean,
     onSaveBalanceSettings: (SipBalancePreset, String, Boolean, Boolean) -> Unit,
     onCheckBalanceNow: () -> Unit,
+    onTestNetwork: () -> Unit,
     onReRegister: () -> Unit,
     onSetDefault: () -> Unit,
     onDelete: () -> Unit,
@@ -827,6 +996,13 @@ private fun SipAccountManageSheet(
                     }
                 }
             }
+
+            SipNetworkHealthBanner(
+                targetAccount = account,
+                health = networkHealth,
+                isChecking = isCheckingNetwork,
+                onTestNetwork = onTestNetwork
+            )
 
             Text(
                 text = "Balance Check Provider",

@@ -2,7 +2,7 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Adaptive Light & Dark Palette ("Tactile Precision")
+// 1. Classic Sapphire (Default "Tactile Precision")
 val CobaltPrimaryLight = Color(0xFF1D4ED8)
 val OnCobaltLight = Color(0xFFFFFFFF)
 val CobaltContainerLight = Color(0xFFDBEAFE)
@@ -28,7 +28,7 @@ val CrimsonErrorLight = Color(0xFFDC2626)
 val CrimsonContainerLight = Color(0xFFFEE2E2)
 val OnCrimsonContainerLight = Color(0xFF7F1D1D)
 
-// Dark Theme Tokens
+// Sapphire Dark Tokens
 val SkyPrimaryDark = Color(0xFF60A5FA)
 val OnSkyDark = Color(0xFF08204B)
 val SkyContainerDark = Color(0xFF17356C)
@@ -53,6 +53,51 @@ val OutlineDark = Color(0xFF334155)
 val CoralErrorDark = Color(0xFFF87171)
 val CoralContainerDark = Color(0xFF7F1D1D)
 val OnCoralContainerDark = Color(0xFFFEE2E2)
+
+// 2. Emerald Forest Palette
+val ForestPrimaryLight = Color(0xFF047857)
+val ForestContainerLight = Color(0xFFD1FAE5)
+val OnForestContainerLight = Color(0xFF022C22)
+val ForestPrimaryDark = Color(0xFF34D399)
+val OnForestDark = Color(0xFF022C22)
+val ForestContainerDark = Color(0xFF064E3B)
+val OnForestContainerDark = Color(0xFFA7F3D0)
+
+// 3. Royal Amethyst Palette
+val AmethystPrimaryLight = Color(0xFF6D28D9)
+val AmethystContainerLight = Color(0xFFEDE9FE)
+val OnAmethystContainerLight = Color(0xFF2E1065)
+val AmethystPrimaryDark = Color(0xFFA78BFA)
+val OnAmethystDark = Color(0xFF2E1065)
+val AmethystContainerDark = Color(0xFF4C1D95)
+val OnAmethystContainerDark = Color(0xFFEDE9FE)
+
+// 4. Sunset Amber Palette
+val AmberPrimaryLight = Color(0xFFC2410C)
+val AmberContainerLight = Color(0xFFFFEDD5)
+val OnAmberContainerLight = Color(0xFF431407)
+val AmberPrimaryDark = Color(0xFFFB923C)
+val OnAmberDark = Color(0xFF431407)
+val AmberContainerDark = Color(0xFF7C2D12)
+val OnAmberContainerDark = Color(0xFFFFEDD5)
+
+// 5. Crimson Ruby Palette
+val RubyPrimaryLight = Color(0xFFBE123C)
+val RubyContainerLight = Color(0xFFFFE4E6)
+val OnRubyContainerLight = Color(0xFF4C0519)
+val RubyPrimaryDark = Color(0xFFFB7185)
+val OnRubyDark = Color(0xFF4C0519)
+val RubyContainerDark = Color(0xFF881337)
+val OnRubyContainerDark = Color(0xFFFFE4E6)
+
+// 6. Oceanic Teal Palette
+val TealPrimaryLight = Color(0xFF0F766E)
+val TealContainerLight = Color(0xFFCCFBF1)
+val OnTealContainerLight = Color(0xFF042F2E)
+val TealPrimaryDark = Color(0xFF2DD4BF)
+val OnTealDark = Color(0xFF042F2E)
+val TealContainerDark = Color(0xFF134E4A)
+val OnTealContainerDark = Color(0xFFCCFBF1)
 
 // Semantic Signal Accents
 val SignalConnected = Color(0xFF10B981)

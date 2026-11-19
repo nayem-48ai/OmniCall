@@ -4,6 +4,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
@@ -45,8 +46,14 @@ class IncomingCallActivity : ComponentActivity() {
                 }
             }
 
+            BackHandler {
+                coordinator.minimizeCallUi()
+                finish()
+            }
+
             OmniCallTheme(
                 themePreference = settings.themePreference,
+                colorPalette = settings.colorPalette,
                 dynamicColor = settings.dynamicColorEnabled
             ) {
                 InCallScreen(
@@ -65,6 +72,10 @@ class IncomingCallActivity : ComponentActivity() {
                     },
                     onEndCall = {
                         coordinator.endActiveCall()
+                        finish()
+                    },
+                    onMinimize = {
+                        coordinator.minimizeCallUi()
                         finish()
                     }
                 )

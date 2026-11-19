@@ -94,6 +94,9 @@ class ActiveCallCoordinator(
     private val _elapsedSeconds = MutableStateFlow(0)
     val elapsedSeconds: StateFlow<Int> = _elapsedSeconds.asStateFlow()
 
+    private val _isCallUiMinimized = MutableStateFlow(false)
+    val isCallUiMinimized: StateFlow<Boolean> = _isCallUiMinimized.asStateFlow()
+
     var callInterceptor: CallInterceptor? = null
 
     private var timerJob: Job? = null
@@ -133,12 +136,14 @@ class ActiveCallCoordinator(
                         if (_activeCall.value.callId == event.callId) {
                             pendingSipFallbackQueue.clear()
                             activeSipFallbackAccount = null
+                            val route = _activeCall.value.audioRoute
                             _activeCall.update {
                                 it.copy(
                                     lifecycle = CallLifecycleState.RINGING_OUTGOING,
                                     statusMessage = "Ringing via ${activeSipAccount?.transport?.label ?: "SIP"}..."
                                 )
                             }
+                            rtpAudioEngine.startLocalRingback(route)
                         }
                     }
                     is SipSignalingEvent.CallConnected -> {
@@ -222,6 +227,14 @@ class ActiveCallCoordinator(
             current.lifecycle != CallLifecycleState.ENDED
     }
 
+    fun minimizeCallUi() {
+        _isCallUiMinimized.value = true
+    }
+
+    fun expandCallUi() {
+        _isCallUiMinimized.value = false
+    }
+
     fun placeCall(destination: String, route: ResolvedOutgoingRoute) {
         val trimmed = destination.trim()
         if (trimmed.isBlank()) return
@@ -250,6 +263,7 @@ class ActiveCallCoordinator(
                     return
                 }
 
+                _isCallUiMinimized.value = false
                 _activeCall.value = ActiveCallState(
                     callId = UUID.randomUUID().toString(),
                     remoteHandle = trimmed,
@@ -295,6 +309,7 @@ class ActiveCallCoordinator(
                             val callId = SipMessageCodec.newCallId(account.domain)
                             localRtpPort = rtpAudioEngine.allocateLocalRtpPort()
 
+                            _isCallUiMinimized.value = false
                             _activeCall.value = ActiveCallState(
                                 callId = callId,
                                 remoteHandle = sipDestination,
@@ -308,7 +323,7 @@ class ActiveCallCoordinator(
                                     codecName = "Negotiating SDP...",
                                     transportLabel = "${validation.transport.label}:${validation.port}"
                                 ),
-                                statusMessage = "Dialing via ${validation.transport.label}..."
+                                statusMessage = "Checking ${sipClientEngine.describeCurrentNetwork()}..."
                             )
                             resolveContactInfoAsync(trimmed)
 
@@ -318,6 +333,22 @@ class ActiveCallCoordinator(
                                 subtitle = "Dialing via ${account.displayName}",
                                 isRecording = false
                             )
+
+                            val networkHealth = sipClientEngine.checkSipNetworkHealth(account)
+                            if (networkHealth.isReachable) {
+                                _activeCall.update {
+                                    it.copy(
+                                        statusMessage = "${networkHealth.networkLabel} (${networkHealth.latencyMs}ms) • Dialing..."
+                                    )
+                                }
+                            } else {
+                                _callErrorEvents.tryEmit(networkHealth.summary)
+                                _activeCall.update {
+                                    it.copy(
+                                        statusMessage = "${networkHealth.networkLabel} SIP timeout — trying INVITE..."
+                                    )
+                                }
+                            }
 
                             val prefs = prefsRepository.settingsFlow.first()
                             val sent = sipClientEngine.placeOutgoingInvite(
@@ -362,26 +393,34 @@ class ActiveCallCoordinator(
                 var notifName = info.displayName
                 var notifHandle = numberOrUri
                 var notifBadge = ""
+                var notifPhotoUri: String? = null
                 _activeCall.update { current ->
                     val currentDigits = current.remoteHandle.filter(Char::isDigit)
                     val matchesHandle = current.remoteHandle == numberOrUri ||
                         (queryDigits.length >= 7 && currentDigits.length >= 7 &&
                             (currentDigits == queryDigits || currentDigits.takeLast(8) == queryDigits.takeLast(8)))
                     if (matchesHandle) {
+                        val mergedPhoto = info.photoUri ?: current.remotePhotoUri
                         if (current.lifecycle == CallLifecycleState.RINGING_INCOMING) {
                             shouldRefreshIncomingNotif = true
                             notifName = info.displayName
                             notifHandle = current.remoteHandle
                             notifBadge = current.routeBadge
+                            notifPhotoUri = mergedPhoto
                         }
                         current.copy(
                             displayName = info.displayName.ifBlank { current.displayName },
-                            remotePhotoUri = info.photoUri ?: current.remotePhotoUri
+                            remotePhotoUri = mergedPhoto
                         )
                     } else current
                 }
                 if (shouldRefreshIncomingNotif) {
-                    notificationManager.showIncomingCallNotification(notifName, notifHandle, notifBadge)
+                    notificationManager.showIncomingCallNotification(
+                        callerName = notifName,
+                        callerHandle = notifHandle,
+                        lineBadge = notifBadge,
+                        callerPhotoUri = notifPhotoUri
+                    )
                 }
             }
         }
@@ -416,6 +455,7 @@ class ActiveCallCoordinator(
         val info = contactsRepository.lookupContactInfo(event.fromUri)
         val resolvedName = info?.displayName ?: event.displayName
 
+        _isCallUiMinimized.value = false
         _activeCall.value = ActiveCallState(
             callId = event.callId,
             remoteHandle = event.fromUri,
@@ -438,7 +478,12 @@ class ActiveCallCoordinator(
             subtitle = "Incoming $badge",
             isRecording = false
         )
-        notificationManager.showIncomingCallNotification(resolvedName, event.fromUri, badge)
+        notificationManager.showIncomingCallNotification(
+            callerName = resolvedName,
+            callerHandle = event.fromUri,
+            lineBadge = badge,
+            callerPhotoUri = info?.photoUri
+        )
         runCatching {
             context.startActivity(
                 Intent(context, IncomingCallActivity::class.java).apply {
@@ -487,6 +532,7 @@ class ActiveCallCoordinator(
     }
 
     private fun onSipMediaConnected(remoteSdp: SdpMediaSpec?) {
+        rtpAudioEngine.stopLocalRingback()
         val current = _activeCall.value
         val connectedTime = System.currentTimeMillis()
         _activeCall.update {
@@ -838,6 +884,7 @@ class ActiveCallCoordinator(
 
         if (existing.lifecycle == CallLifecycleState.IDLE) {
             currentCallLogged = false
+            _isCallUiMinimized.value = false
             activeCallDirection = if (isIncoming) CallDirection.INCOMING else CallDirection.OUTGOING
         }
 
@@ -879,7 +926,12 @@ class ActiveCallCoordinator(
         }
 
         if (lifecycle == CallLifecycleState.RINGING_INCOMING) {
-            notificationManager.showIncomingCallNotification(resolvedDisplayName, remoteHandle, routeBadge)
+            notificationManager.showIncomingCallNotification(
+                callerName = resolvedDisplayName,
+                callerHandle = remoteHandle,
+                lineBadge = routeBadge,
+                callerPhotoUri = existing.remotePhotoUri
+            )
         } else {
             notificationManager.cancelIncomingNotification()
         }
@@ -953,6 +1005,7 @@ class ActiveCallCoordinator(
             savedRecordingId = callRecorder.stopRecording()?.id
         }
 
+        rtpAudioEngine.stopLocalRingback()
         rtpAudioEngine.stopMediaSession()
         proximityWakeLockManager.release()
         notificationManager.cancelIncomingNotification()
@@ -986,6 +1039,7 @@ class ActiveCallCoordinator(
         _activeCall.value = ActiveCallState(statusMessage = reason)
         delay(200L)
         _activeCall.value = ActiveCallState()
+        _isCallUiMinimized.value = false
         _elapsedSeconds.value = 0
         autoRecordingTriggeredForCallId = null
         pendingSipFallbackQueue.clear()

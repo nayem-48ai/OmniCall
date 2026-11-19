@@ -22,9 +22,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Backspace
+import androidx.compose.material.icons.automirrored.rounded.CallMade
+import androidx.compose.material.icons.automirrored.rounded.CallMissed
+import androidx.compose.material.icons.automirrored.rounded.CallReceived
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.SimCard
 import androidx.compose.material.icons.rounded.WifiCalling3
@@ -32,6 +36,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -54,8 +59,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.domain.model.CallDirection
+import com.example.domain.model.CallSourceType
 import com.example.domain.model.OutgoingRoutingMode
+import com.example.ui.components.ContactAvatar
 import com.example.ui.components.SipStatusPill
+import com.example.ui.viewmodel.DialerSuggestionItem
 import com.example.ui.viewmodel.DialerUiState
 import com.example.ui.viewmodel.DialerViewModel
 
@@ -192,46 +201,21 @@ fun DialerScreen(
                 }
             }
 
-            // Smart Matched Recents Preview
+            // Polished Smart Matched Recents & Contacts Suggestions
+            val suggestionsList = uiState.suggestions
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(vertical = 6.dp),
-                verticalArrangement = Arrangement.Bottom
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom)
             ) {
-                items(uiState.matchingRecents, key = { it.id }) { item ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { viewModel.initiateCall(item.remoteHandle) }
-                            .padding(horizontal = 10.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.displayName,
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${item.remoteHandle} • ${item.lineLabel}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.Rounded.Call,
-                            contentDescription = "Call ${item.displayName}",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                items(suggestionsList, key = { it.id }) { item ->
+                    DialerSuggestionCard(
+                        item = item,
+                        onFillNumber = { viewModel.setNumberInput(item.number) },
+                        onCall = { viewModel.initiateCall(item.number) }
+                    )
                 }
             }
 
@@ -527,6 +511,126 @@ private fun DialpadButton(
                     style = MaterialTheme.typography.labelSmall,
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DialerSuggestionCard(
+    item: DialerSuggestionItem,
+    onFillNumber: () -> Unit,
+    onCall: () -> Unit
+) {
+    val directionIcon = when {
+        item.isContactMatch -> Icons.Rounded.Person
+        item.direction == CallDirection.OUTGOING -> Icons.AutoMirrored.Rounded.CallMade
+        item.direction == CallDirection.INCOMING -> Icons.AutoMirrored.Rounded.CallReceived
+        else -> Icons.AutoMirrored.Rounded.CallMissed
+    }
+    val directionTint = when {
+        item.isContactMatch -> MaterialTheme.colorScheme.primary
+        item.direction == CallDirection.MISSED -> MaterialTheme.colorScheme.error
+        item.direction == CallDirection.INCOMING -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.primary
+    }
+    val shortLineBadge = when (item.sourceType) {
+        CallSourceType.SIP -> "SIP"
+        CallSourceType.SIM_1 -> "SIM 1"
+        CallSourceType.SIM_2 -> "SIM 2"
+        null -> item.lineLabel.ifBlank { "Contact" }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.56f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .combinedClickable(
+                onClick = onCall,
+                onLongClick = onFillNumber
+            )
+            .testTag("dialer_suggestion_${item.id}")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ContactAvatar(
+                displayName = item.displayName.ifBlank { item.number },
+                photoUri = item.photoUri,
+                size = 40.dp,
+                fontSize = 15.sp
+            )
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = item.displayName.ifBlank { item.number },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = directionIcon,
+                        contentDescription = null,
+                        tint = directionTint,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = item.number,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = shortLineBadge,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+
+            FilledTonalIconButton(
+                onClick = onCall,
+                modifier = Modifier
+                    .size(40.dp)
+                    .minimumInteractiveComponentSize(),
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Call,
+                    contentDescription = "Call ${item.displayName}",
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }

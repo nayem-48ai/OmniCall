@@ -10,7 +10,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.AppContainer
 import com.example.data.preferences.AppSettingsState
 import com.example.data.repository.CallLogItem
+import com.example.data.repository.ContactItem
 import com.example.domain.model.AvailableCallingEnvironment
+import com.example.domain.model.CallDirection
+import com.example.domain.model.CallSourceType
 import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.ResolvedOutgoingRoute
 import com.example.domain.model.SimSlotInfo
@@ -24,9 +27,22 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+data class DialerSuggestionItem(
+    val id: String,
+    val displayName: String,
+    val number: String,
+    val photoUri: String? = null,
+    val direction: CallDirection? = null,
+    val sourceType: CallSourceType? = null,
+    val lineLabel: String = "",
+    val timestampMs: Long? = null,
+    val isContactMatch: Boolean = false
+)
+
 data class DialerUiState(
     val inputNumber: String = "",
     val matchingRecents: List<CallLogItem> = emptyList(),
+    val suggestions: List<DialerSuggestionItem> = emptyList(),
     val environment: AvailableCallingEnvironment = AvailableCallingEnvironment(),
     val showRoutePickerSheet: Boolean = false,
     val pendingCallDestination: String? = null,
@@ -44,6 +60,7 @@ class DialerViewModel(
     private val _inputNumber = MutableStateFlow("")
     private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(initialSims)
     private val _isDefaultDialer = MutableStateFlow(initialIsDefault)
+    private val _contacts = MutableStateFlow<List<ContactItem>>(emptyList())
     private val _showRoutePickerSheet = MutableStateFlow(false)
     private val _pendingDestination = MutableStateFlow<String?>(null)
     private val _bannerMessage = MutableStateFlow<String?>(null)
@@ -82,6 +99,13 @@ class DialerViewModel(
             pendingCallDestination = _pendingDestination.value,
             bannerMessage = _bannerMessage.value
         )
+    }.combine(_contacts) { state, contacts ->
+        val suggestions = buildSuggestions(
+            query = state.inputNumber,
+            recents = state.matchingRecents,
+            contacts = contacts
+        )
+        state.copy(suggestions = suggestions)
     }.combine(_isDefaultDialer) { state, isDefault ->
         state.copy(environment = state.environment.copy(isDefaultDialer = isDefault))
     }.combine(_pendingDestination) { state, pending ->
@@ -103,6 +127,9 @@ class DialerViewModel(
 
     init {
         viewModelScope.launch {
+            _contacts.value = container.contactsRepository.loadContacts()
+        }
+        viewModelScope.launch {
             container.activeCallCoordinator.callErrorEvents.collect { errorMsg ->
                 _bannerMessage.value = errorMsg
             }
@@ -112,6 +139,87 @@ class DialerViewModel(
     fun refreshHardwareEnvironment() {
         _simSlots.value = container.simSubscriptionDetector.detectActiveSims()
         _isDefaultDialer.value = container.telecomCallManager.isDefaultDialer()
+        viewModelScope.launch {
+            _contacts.value = container.contactsRepository.loadContacts()
+        }
+    }
+
+    private fun buildSuggestions(
+        query: String,
+        recents: List<CallLogItem>,
+        contacts: List<ContactItem>
+    ): List<DialerSuggestionItem> {
+        val tailMap = HashMap<String, ContactItem>()
+        contacts.forEach { contact ->
+            contact.phoneNumbers.forEach { phone ->
+                val tail = phone.number.filter(Char::isDigit).let { d ->
+                    if (d.length >= 8) d.takeLast(9) else d
+                }
+                if (tail.isNotEmpty() && !tailMap.containsKey(tail)) {
+                    tailMap[tail] = contact
+                }
+            }
+        }
+
+        val seenNumbers = HashSet<String>()
+        val results = mutableListOf<DialerSuggestionItem>()
+
+        recents.forEach { log ->
+            val digits = log.remoteHandle.filter(Char::isDigit)
+            val tail = if (digits.length >= 8) digits.takeLast(9) else digits
+            val key = tail.ifBlank { log.remoteHandle.lowercase() }
+            if (seenNumbers.add(key)) {
+                val matchedContact = if (tail.isNotEmpty()) tailMap[tail] else null
+                val resolvedName = matchedContact?.displayName?.ifBlank { null }
+                    ?: log.displayName.ifBlank { log.remoteHandle }
+                results.add(
+                    DialerSuggestionItem(
+                        id = "recent_${log.id}",
+                        displayName = resolvedName,
+                        number = log.remoteHandle,
+                        photoUri = matchedContact?.photoUri,
+                        direction = log.direction,
+                        sourceType = log.sourceType,
+                        lineLabel = log.lineLabel,
+                        timestampMs = log.timestampMs,
+                        isContactMatch = false
+                    )
+                )
+            }
+        }
+
+        val q = query.trim().lowercase()
+        if (q.isNotBlank()) {
+            val qDigits = q.filter(Char::isDigit)
+            for (contact in contacts) {
+                if (results.size >= 6) break
+                val nameMatches = contact.displayName.lowercase().contains(q)
+                val matchedPhone = contact.phoneNumbers.firstOrNull { phone ->
+                    phone.number.lowercase().contains(q) ||
+                        (qDigits.isNotEmpty() && phone.number.filter(Char::isDigit).contains(qDigits))
+                } ?: if (nameMatches) contact.phoneNumbers.firstOrNull() else null
+
+                if (matchedPhone != null) {
+                    val digits = matchedPhone.number.filter(Char::isDigit)
+                    val tail = if (digits.length >= 8) digits.takeLast(9) else digits
+                    val key = tail.ifBlank { matchedPhone.number.lowercase() }
+                    if (seenNumbers.add(key)) {
+                        results.add(
+                            DialerSuggestionItem(
+                                id = "contact_${contact.id}_$key",
+                                displayName = contact.displayName,
+                                number = matchedPhone.number,
+                                photoUri = contact.photoUri,
+                                lineLabel = matchedPhone.typeLabel,
+                                isContactMatch = true
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        return results.take(if (q.isBlank()) 4 else 6)
     }
 
     fun appendDigit(digit: Char) {

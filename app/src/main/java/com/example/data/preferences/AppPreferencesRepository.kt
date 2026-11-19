@@ -11,6 +11,7 @@ import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.RecordingEngine
 import com.example.domain.model.RecordingFormat
 import com.example.domain.model.RecordingType
+import com.example.ui.theme.AppColorPalette
 import com.example.ui.theme.ThemePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -30,6 +31,7 @@ data class AppSettingsState(
     val enableHardwareNs: Boolean = true,
     val enableHardwareAgc: Boolean = true,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
+    val colorPalette: AppColorPalette = AppColorPalette.SAPPHIRE,
     val dynamicColorEnabled: Boolean = false
 )
 
@@ -46,6 +48,7 @@ class AppPreferencesRepository(private val context: Context) {
         val HARDWARE_NS = booleanPreferencesKey("enable_hardware_ns")
         val HARDWARE_AGC = booleanPreferencesKey("enable_hardware_agc")
         val THEME_PREF = stringPreferencesKey("theme_preference")
+        val COLOR_PALETTE = stringPreferencesKey("color_palette")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color_enabled")
     }
 
@@ -71,6 +74,9 @@ class AppPreferencesRepository(private val context: Context) {
             themePreference = prefs[Keys.THEME_PREF]?.let {
                 runCatching { ThemePreference.valueOf(it) }.getOrNull()
             } ?: ThemePreference.SYSTEM,
+            colorPalette = prefs[Keys.COLOR_PALETTE]?.let {
+                runCatching { AppColorPalette.valueOf(it) }.getOrNull()
+            } ?: AppColorPalette.SAPPHIRE,
             dynamicColorEnabled = prefs[Keys.DYNAMIC_COLOR] ?: false
         )
     }
@@ -111,6 +117,13 @@ class AppPreferencesRepository(private val context: Context) {
 
     suspend fun setThemePreference(theme: ThemePreference) {
         context.appPrefsDataStore.edit { it[Keys.THEME_PREF] = theme.name }
+    }
+
+    suspend fun setColorPalette(palette: AppColorPalette) {
+        context.appPrefsDataStore.edit {
+            it[Keys.COLOR_PALETTE] = palette.name
+            it[Keys.DYNAMIC_COLOR] = false
+        }
     }
 
     suspend fun setDynamicColor(enabled: Boolean) {

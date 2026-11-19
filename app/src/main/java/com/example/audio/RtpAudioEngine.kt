@@ -65,6 +65,8 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
     private var rtpSocket: DatagramSocket? = null
     private var txJob: Job? = null
     private var rxJob: Job? = null
+    private var ringbackJob: Job? = null
+    private var ringbackTrack: AudioTrack? = null
 
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
@@ -99,6 +101,7 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
         enableAgc: Boolean,
         transportLabel: String
     ) {
+        stopLocalRingback()
         stopMediaSession()
 
         configureAudioFocusForVoip()
@@ -476,7 +479,112 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
         return packet
     }
 
+    /**
+     * Plays a crisp ITU/carrier outgoing ringback tone (440 Hz + 480 Hz dual-tone, 1.8s on / 2.6s off)
+     * through [AudioAttributes.USAGE_VOICE_COMMUNICATION] so it respects Earpiece/Speaker/Bluetooth routing
+     * whenever the remote SIP server responds with 180 Ringing or 183 Session Progress.
+     */
+    fun startLocalRingback(audioRoute: AudioRouteType = AudioRouteType.EARPIECE) {
+        if (ringbackJob?.isActive == true) return
+        stopLocalRingback()
+
+        configureAudioFocusForVoip()
+        setAudioRoute(audioRoute, isTelecomManaged = false)
+
+        ringbackJob = scope.launch {
+            val sampleRate = 16000
+            val minBuf = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(3200)
+
+            val track = runCatching {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minBuf)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+            }.getOrNull() ?: return@launch
+
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                runCatching { track.release() }
+                return@launch
+            }
+            ringbackTrack = track
+            runCatching { track.play() }
+
+            // Precompute 1.8s smooth 440Hz + 480Hz ringback burst (with 15ms fade envelope)
+            val toneSamplesCount = (sampleRate * 18) / 10
+            val fadeSamples = (sampleRate * 15) / 1000
+            val tonePcm = ShortArray(toneSamplesCount) { i ->
+                val env = when {
+                    i < fadeSamples -> i.toDouble() / fadeSamples
+                    i > toneSamplesCount - fadeSamples -> (toneSamplesCount - i).toDouble() / fadeSamples
+                    else -> 1.0
+                }
+                val t = i.toDouble() / sampleRate
+                val sample = 0.24 * env * (
+                    kotlin.math.sin(2.0 * kotlin.math.PI * 440.0 * t) +
+                        kotlin.math.sin(2.0 * kotlin.math.PI * 480.0 * t)
+                    ) * Short.MAX_VALUE
+                sample.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+            val chunkSilence = ShortArray(320) // 20ms silent frames during off-cadence
+
+            try {
+                while (isActive) {
+                    var offset = 0
+                    while (isActive && offset < tonePcm.size) {
+                        val len = minOf(640, tonePcm.size - offset)
+                        val written = runCatching { track.write(tonePcm, offset, len) }.getOrDefault(-1)
+                        if (written <= 0) break
+                        offset += len
+                    }
+                    // 2.6 seconds off-cadence (130 x 20ms chunks so cancellation is instant)
+                    repeat(130) {
+                        if (!isActive) return@launch
+                        runCatching { track.write(chunkSilence, 0, chunkSilence.size) }
+                    }
+                }
+            } finally {
+                runCatching {
+                    track.stop()
+                    track.release()
+                }
+                if (ringbackTrack === track) {
+                    ringbackTrack = null
+                }
+            }
+        }
+    }
+
+    fun stopLocalRingback() {
+        ringbackJob?.cancel()
+        ringbackJob = null
+        runCatching {
+            ringbackTrack?.pause()
+            ringbackTrack?.flush()
+            ringbackTrack?.stop()
+            ringbackTrack?.release()
+        }
+        ringbackTrack = null
+    }
+
     fun stopMediaSession() {
+        stopLocalRingback()
         txJob?.cancel()
         rxJob?.cancel()
         txJob = null

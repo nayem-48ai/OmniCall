@@ -16,6 +16,7 @@ import com.example.domain.model.SipTransport
 import com.example.sip.BalanceResponseParser
 import com.example.sip.SipClientEngine
 import com.example.sip.SipMessageCodec
+import com.example.ui.theme.AppColorPalette
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -436,5 +437,31 @@ class SipAndRoutingUnitTest {
             toTag = "tag99"
         )
         assertTrue(response.contains("To: <sip:09639170537@icctalk.com>;tag=tag99"))
+    }
+
+    @Test
+    fun appColorPalette_providesDefaultPlusFiveNewProfessionalThemes() {
+        val palettes = AppColorPalette.entries
+        assertEquals(6, palettes.size)
+        assertEquals(
+            listOf("Sapphire", "Emerald", "Amethyst", "Amber", "Ruby", "Teal"),
+            palettes.map { it.label }
+        )
+    }
+
+    @Test
+    fun sipMessageCodec_buildsValidOptionsProbeRequest() {
+        val req = SipMessageCodec.buildOptionsRequest(
+            domain = "icctalk.com",
+            port = 5060,
+            username = "09639170537",
+            localIp = "192.168.1.25",
+            localPort = 51000,
+            transport = SipTransport.UDP
+        )
+        assertTrue(req.startsWith("OPTIONS sip:icctalk.com:5060 SIP/2.0"))
+        assertTrue(req.contains("Via: SIP/2.0/UDP 192.168.1.25:51000"))
+        assertTrue(req.contains("CSeq: 1 OPTIONS"))
+        assertTrue(req.contains("From: <sip:09639170537@icctalk.com>"))
     }
 }
