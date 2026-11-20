@@ -29,6 +29,19 @@ class VoipCallForegroundService : Service() {
 
         when (intent?.action) {
             CallNotificationManager.ACTION_ANSWER_CALL -> {
+                if (!isForegroundRunning.value) {
+                    val active = coordinator.activeCall.value
+                    val title = active.displayName.ifBlank { active.remoteHandle }.ifBlank { "OmniCall" }
+                    val subtitle = active.routeBadge.ifBlank { "Active call" }
+                    val notif = notifManager.buildOngoingCallNotification(title, subtitle, active.isRecording)
+                    val hasMicPerm = ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    startForegroundSafely(notif, wantMicrophone = hasMicPerm)
+                    isForegroundMicReady.value = hasMicPerm
+                    isForegroundRunning.value = true
+                }
                 coordinator.answerIncomingCall()
             }
             CallNotificationManager.ACTION_DECLINE_CALL -> {

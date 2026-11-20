@@ -113,16 +113,24 @@ private val NAV_ITEMS = listOf(
     NavItem(SettingsRoute, "Settings", Icons.Rounded.Settings, Icons.Outlined.Settings, "nav_settings")
 )
 
+private data class CallbackLaunchRequest(
+    val number: String,
+    val preferSip: Boolean,
+    val id: Long = System.nanoTime()
+)
+
 class MainActivity : ComponentActivity() {
 
     private val incomingDialNumber = mutableStateOf<String?>(null)
+    private val openRecentsTrigger = mutableIntStateOf(0)
+    private val callbackRequest = mutableStateOf<CallbackLaunchRequest?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val app = application as OmniCallApplication
         val factory = OmniCallViewModelFactory(app, app.container)
-        incomingDialNumber.value = extractDialNumber(intent)
+        processIncomingIntent(app, intent)
 
         setContent {
             val settings by app.container.preferencesRepository.settingsFlow
@@ -137,7 +145,10 @@ class MainActivity : ComponentActivity() {
                     app = app,
                     factory = factory,
                     activityStoreOwner = this@MainActivity,
-                    initialDialNumber = incomingDialNumber.value
+                    initialDialNumber = incomingDialNumber.value,
+                    openRecentsTrigger = openRecentsTrigger.intValue,
+                    callbackRequest = callbackRequest.value,
+                    onConsumeCallbackRequest = { callbackRequest.value = null }
                 )
             }
         }
@@ -146,8 +157,34 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        val app = application as OmniCallApplication
+        processIncomingIntent(app, intent)
+    }
+
+    private fun processIncomingIntent(app: OmniCallApplication, intent: Intent?) {
+        if (intent == null) return
         extractDialNumber(intent)?.let { number ->
             incomingDialNumber.value = number
+        }
+        if (intent.getBooleanExtra(com.example.telecom.CallNotificationManager.EXTRA_EXPAND_ACTIVE_CALL, false)) {
+            app.container.activeCallCoordinator.expandCallUi()
+        }
+        if (intent.getStringExtra(com.example.telecom.CallNotificationManager.EXTRA_OPEN_TAB) ==
+            com.example.telecom.CallNotificationManager.TAB_RECENTS
+        ) {
+            app.container.callNotificationManager.cancelMissedCallNotifications()
+            app.container.telecomCallManager.cancelMissedCallsNotification()
+            openRecentsTrigger.intValue++
+        }
+        val callbackNum = intent.getStringExtra(com.example.telecom.CallNotificationManager.EXTRA_CALLBACK_NUMBER)
+        if (!callbackNum.isNullOrBlank()) {
+            app.container.callNotificationManager.cancelMissedCallNotifications()
+            app.container.telecomCallManager.cancelMissedCallsNotification()
+            val isSip = intent.getBooleanExtra(
+                com.example.telecom.CallNotificationManager.EXTRA_CALLBACK_IS_SIP,
+                false
+            )
+            callbackRequest.value = CallbackLaunchRequest(number = callbackNum, preferSip = isSip)
         }
     }
 
@@ -162,7 +199,10 @@ private fun OmniCallRoot(
     app: OmniCallApplication,
     factory: OmniCallViewModelFactory,
     activityStoreOwner: ViewModelStoreOwner,
-    initialDialNumber: String?
+    initialDialNumber: String?,
+    openRecentsTrigger: Int,
+    callbackRequest: CallbackLaunchRequest?,
+    onConsumeCallbackRequest: () -> Unit
 ) {
     // Only DialerViewModel is needed on frame-1 launch; secondary tab ViewModels initialize lazily when opened.
     val dialerViewModel: DialerViewModel = viewModel(
@@ -300,6 +340,28 @@ private fun OmniCallRoot(
         }
     }
 
+    LaunchedEffect(openRecentsTrigger) {
+        if (openRecentsTrigger > 0) {
+            navigateToTab(RecentsRoute)
+        }
+    }
+
+    LaunchedEffect(callbackRequest) {
+        val req = callbackRequest ?: return@LaunchedEffect
+        onConsumeCallbackRequest()
+        if (req.preferSip) {
+            val sipRoute = dialerViewModel
+                .buildAvailableRoutes(dialerState.environment)
+                .filterIsInstance<com.example.domain.model.ResolvedOutgoingRoute.SipAccount>()
+                .firstOrNull()
+            if (sipRoute != null) {
+                app.container.activeCallCoordinator.placeCall(req.number, sipRoute)
+                return@LaunchedEffect
+            }
+        }
+        dialerViewModel.initiateCall(req.number)
+    }
+
     val requestStandardPermissions: () -> Unit = {
         permissionLauncher.launch(
             arrayOf(
@@ -384,6 +446,8 @@ private fun OmniCallRoot(
                         val recentsState by recentsViewModel.uiState.collectAsStateWithLifecycle()
                         LaunchedEffect(refreshTick) {
                             recentsViewModel.refreshContactsIndex()
+                            app.container.callNotificationManager.cancelMissedCallNotifications()
+                            app.container.telecomCallManager.cancelMissedCallsNotification()
                         }
                         RecentsScreen(
                             uiState = recentsState,

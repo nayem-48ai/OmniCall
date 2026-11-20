@@ -144,6 +144,13 @@ class TelecomCallManager(
         runCatching { tm.addNewIncomingCall(voipAccountHandle, extras) }
     }
 
+    @SuppressLint("MissingPermission")
+    fun cancelMissedCallsNotification() {
+        val tm = telecomManager ?: return
+        if (!isDefaultDialer()) return
+        runCatching { tm.cancelMissedCallsNotification() }
+    }
+
     companion object {
         const val EXTRA_OMNICALL_CALL_ID = "extra_omnicall_call_id"
         const val EXTRA_SIP_ACCOUNT_LABEL = "extra_sip_account_label"

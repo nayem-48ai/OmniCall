@@ -165,7 +165,20 @@ class ActiveCallCoordinator(
                         if (_activeCall.value.callId == event.callId) {
                             pendingSipFallbackQueue.clear()
                             activeSipFallbackAccount = null
-                            finalizeAndClearCall("Call ended by remote party")
+                            val cur = _activeCall.value
+                            val isMissedIncoming = shouldNotifyMissedCall(
+                                isIncoming = cur.isIncoming,
+                                wasConnected = cur.connectedAtEpochMs != null,
+                                endedByLocalUser = endedByLocalUser,
+                                disconnectCode = null
+                            )
+                            if (isMissedIncoming) {
+                                activeCallDirection = CallDirection.MISSED
+                            }
+                            finalizeAndClearCall(
+                                reason = if (isMissedIncoming) "Missed call" else "Call ended by remote party",
+                                notifyMissed = isMissedIncoming
+                            )
                         }
                     }
                     is SipSignalingEvent.CallFailed -> {
@@ -185,23 +198,34 @@ class ActiveCallCoordinator(
                             } else {
                                 pendingSipFallbackQueue.clear()
                                 activeSipFallbackAccount = null
+                                val cur = _activeCall.value
+                                val isMissedIncoming = shouldNotifyMissedCall(
+                                    isIncoming = cur.isIncoming,
+                                    wasConnected = cur.connectedAtEpochMs != null,
+                                    endedByLocalUser = endedByLocalUser,
+                                    disconnectCode = null
+                                )
+                                if (isMissedIncoming) {
+                                    activeCallDirection = CallDirection.MISSED
+                                }
                                 val autoRecallOn = prefsRepository.settingsFlow.first().autoRecallEnabled
                                 val canRecall = shouldTriggerAutoRecall(
                                     enabled = autoRecallOn,
                                     direction = activeCallDirection,
-                                    wasConnected = _activeCall.value.connectedAtEpochMs != null,
+                                    wasConnected = cur.connectedAtEpochMs != null,
                                     endedByLocalUser = endedByLocalUser,
                                     disconnectCode = null,
                                     sipStatusCode = event.statusCode,
                                     attempt = currentRecallAttempt
                                 )
-                                if (!canRecall && outcome.showErrorBanner) {
+                                if (!canRecall && !isMissedIncoming && outcome.showErrorBanner) {
                                     _callErrorEvents.tryEmit(outcome.userMessage)
                                 }
                                 finalizeAndClearCall(
-                                    reason = outcome.userMessage,
+                                    reason = if (isMissedIncoming) "Missed call" else outcome.userMessage,
                                     holdStatusMs = if (canRecall) 0L else if (!outcome.showErrorBanner) 1050L else 200L,
-                                    allowAutoRecall = canRecall
+                                    allowAutoRecall = canRecall,
+                                    notifyMissed = isMissedIncoming
                                 )
                             }
                         }
@@ -558,12 +582,14 @@ class ActiveCallCoordinator(
             callerPhotoUri = null,
             isCellularTelecom = false
         )
-        runCatching {
-            context.startActivity(
-                Intent(context, IncomingCallActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
-                }
-            )
+        if (CallNotificationManager.shouldLaunchFullScreenIncomingUi(context, isCellularTelecom = false)) {
+            runCatching {
+                context.startActivity(
+                    Intent(context, IncomingCallActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                    }
+                )
+            }
         }
         resolveContactInfoAsync(event.fromUri)
         refreshAudioRoutesAsync()
@@ -1116,6 +1142,12 @@ class ActiveCallCoordinator(
         val directionSnapshot = activeCallDirection
         val localEndSnapshot = endedByLocalUser
         val attemptSnapshot = currentRecallAttempt
+        val notifyMissed = shouldNotifyMissedCall(
+            isIncoming = existing.isIncoming,
+            wasConnected = wasConnected,
+            endedByLocalUser = localEndSnapshot,
+            disconnectCode = disconnectCode
+        )
         scope.launch {
             val autoRecallOn = prefsRepository.settingsFlow.first().autoRecallEnabled
             val canRecall = shouldTriggerAutoRecall(
@@ -1131,7 +1163,8 @@ class ActiveCallCoordinator(
             finalizeAndClearCall(
                 reason = reason,
                 holdStatusMs = if (canRecall) 0L else 200L,
-                allowAutoRecall = canRecall
+                allowAutoRecall = canRecall,
+                notifyMissed = notifyMissed
             )
         }
     }
@@ -1219,7 +1252,8 @@ class ActiveCallCoordinator(
     private suspend fun finalizeAndClearCall(
         reason: String,
         holdStatusMs: Long = 200L,
-        allowAutoRecall: Boolean = false
+        allowAutoRecall: Boolean = false,
+        notifyMissed: Boolean = false
     ) = finalizeMutex.withLock {
         val finished = _activeCall.value
         if (finished.lifecycle == CallLifecycleState.IDLE && finished.remoteHandle.isBlank()) {
@@ -1256,6 +1290,16 @@ class ActiveCallCoordinator(
                 lineLabel = finished.routeBadge.ifBlank { finished.sourceType.label },
                 durationSec = durationSec,
                 recordingId = savedRecordingId
+            )
+        }
+
+        if (notifyMissed && finished.remoteHandle.isNotBlank()) {
+            notificationManager.recordAndShowMissedCall(
+                callerName = finished.displayName.ifBlank { finished.remoteHandle },
+                callerHandle = finished.remoteHandle,
+                lineBadge = finished.routeBadge.ifBlank { finished.sourceType.label },
+                callerPhotoUri = finished.remotePhotoUri,
+                isSip = finished.sourceType == CallSourceType.SIP
             )
         }
 
@@ -1381,6 +1425,16 @@ class ActiveCallCoordinator(
                 return false
             }
             return disconnectCode == null || disconnectCode in AUTO_RECALL_SIM_CODES
+        }
+
+        fun shouldNotifyMissedCall(
+            isIncoming: Boolean,
+            wasConnected: Boolean,
+            endedByLocalUser: Boolean,
+            disconnectCode: Int?
+        ): Boolean {
+            if (!isIncoming || wasConnected || endedByLocalUser) return false
+            return disconnectCode != DisconnectCause.REJECTED && disconnectCode != DisconnectCause.LOCAL
         }
 
         fun formatSimDisconnectReason(disconnectCode: Int?): String = when (disconnectCode) {

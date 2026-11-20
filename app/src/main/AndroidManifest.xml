@@ -131,6 +131,20 @@
             android:exported="false"
             android:foregroundServiceType="phoneCall" />
 
+        <!-- Receives Android Telecom missed-call notification delegation when OmniCall is Default Dialer -->
+        <receiver
+            android:name=".telecom.MissedCallBroadcastReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.action.SHOW_MISSED_CALLS_NOTIFICATION" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Handles Answer/Decline/Hangup/Dismiss actions from CallStyle & Missed Call notifications -->
+        <receiver
+            android:name=".telecom.CallNotificationActionReceiver"
+            android:exported="false" />
+
         <!-- Scoped Storage FileProvider for sharing local recordings -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -23,6 +23,7 @@ import com.example.sip.SipClientEngine
 import com.example.sip.SipMessageCodec
 import com.example.telecom.ActiveCallCoordinator
 import com.example.telecom.CallNotificationManager
+import com.example.telecom.MissedCallRecord
 import com.example.ui.theme.AppColorPalette
 import com.example.ui.viewmodel.DialerViewModel
 import com.example.ui.viewmodel.EnrichedCallLogItem
@@ -758,6 +759,151 @@ class SipAndRoutingUnitTest {
                 disconnectCode = DisconnectCause.BUSY,
                 sipStatusCode = null,
                 attempt = ActiveCallCoordinator.MAX_AUTO_RECALL_ATTEMPTS
+            )
+        )
+    }
+
+    @Test
+    fun incomingCallUiMode_usesHeadsUpMiniPopupWhenUnlockedAndInteractive() {
+        // Unlocked & screen on with notifications allowed -> show compact heads-up mini popup, not full-screen
+        assertFalse(
+            CallNotificationManager.shouldLaunchFullScreenIncomingUi(
+                isScreenInteractive = true,
+                isKeyguardLocked = false,
+                hasPostNotificationsPermission = true,
+                notificationsEnabled = true,
+                channelBlocked = false
+            )
+        )
+
+        // Screen off or keyguard locked -> open full-screen IncomingCallActivity
+        assertTrue(
+            CallNotificationManager.shouldLaunchFullScreenIncomingUi(
+                isScreenInteractive = false,
+                isKeyguardLocked = false,
+                hasPostNotificationsPermission = true,
+                notificationsEnabled = true,
+                channelBlocked = false
+            )
+        )
+        assertTrue(
+            CallNotificationManager.shouldLaunchFullScreenIncomingUi(
+                isScreenInteractive = true,
+                isKeyguardLocked = true,
+                hasPostNotificationsPermission = true,
+                notificationsEnabled = true,
+                channelBlocked = false
+            )
+        )
+
+        // Notifications denied/blocked -> fallback to full-screen IncomingCallActivity
+        assertTrue(
+            CallNotificationManager.shouldLaunchFullScreenIncomingUi(
+                isScreenInteractive = true,
+                isKeyguardLocked = false,
+                hasPostNotificationsPermission = false,
+                notificationsEnabled = true,
+                channelBlocked = false
+            )
+        )
+        assertTrue(
+            CallNotificationManager.shouldLaunchFullScreenIncomingUi(
+                isScreenInteractive = true,
+                isKeyguardLocked = false,
+                hasPostNotificationsPermission = true,
+                notificationsEnabled = true,
+                channelBlocked = true
+            )
+        )
+    }
+
+    @Test
+    fun missedCallNotification_formatsSingleAndMultipleCallersAndDeduplicatesSimTelecom() {
+        assertEquals("Missed call", CallNotificationManager.formatMissedCallTitle(1))
+        assertEquals("3 missed calls", CallNotificationManager.formatMissedCallTitle(3))
+
+        val singleSim = listOf(
+            MissedCallRecord(
+                callerName = "Mom",
+                callerHandle = "+8801783103515",
+                lineBadge = "SIM 1 • Grameenphone",
+                callerPhotoUri = null,
+                timestampMs = 1_000L,
+                isSip = false
+            )
+        )
+        assertEquals(
+            "Mom (+8801783103515) • SIM 1",
+            CallNotificationManager.formatMissedCallText(singleSim, totalCount = 1)
+        )
+
+        val multiMixed = listOf(
+            MissedCallRecord("Mom", "+8801783103515", "SIM 1 • GP", null, 2_000L, false),
+            MissedCallRecord("Office SIP", "01711111111", "ICC • UDP", null, 1_500L, true),
+            MissedCallRecord("Tanvir", "01722222222", "SIM 2", null, 1_000L, false)
+        )
+        assertEquals(
+            "Mom, Office SIP (+1 more)",
+            CallNotificationManager.formatMissedCallText(multiMixed, totalCount = 3)
+        )
+
+        // Same caller within 5s window (e.g. InCallService + Telecom broadcast) deduplicates cleanly
+        assertTrue(
+            CallNotificationManager.shouldDeduplicateMissedCall(
+                lastHandle = "+8801783103515",
+                lastTimeMs = 10_000L,
+                newHandle = "01783103515",
+                newTimeMs = 10_600L
+            )
+        )
+        assertFalse(
+            CallNotificationManager.shouldDeduplicateMissedCall(
+                lastHandle = "+8801783103515",
+                lastTimeMs = 10_000L,
+                newHandle = "01783103515",
+                newTimeMs = 20_000L
+            )
+        )
+
+        // Decision rules: unanswered incoming SIM/SIP notifies; user decline / connected / outgoing does not
+        assertTrue(
+            ActiveCallCoordinator.shouldNotifyMissedCall(
+                isIncoming = true,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.MISSED
+            )
+        )
+        assertTrue(
+            ActiveCallCoordinator.shouldNotifyMissedCall(
+                isIncoming = true,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = null
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldNotifyMissedCall(
+                isIncoming = true,
+                wasConnected = false,
+                endedByLocalUser = true,
+                disconnectCode = DisconnectCause.LOCAL
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldNotifyMissedCall(
+                isIncoming = true,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.REJECTED
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldNotifyMissedCall(
+                isIncoming = false,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.MISSED
             )
         )
     }

@@ -29,4 +29,7 @@
     <string name="default_dialer_desc">Required to handle native SIM calls and in-call UI seamlessly alongside SIP VoIP.</string>
     <string name="notification_channel_incoming_name">Incoming Calls</string>
     <string name="notification_channel_ongoing_name">Active VoIP Calls</string>
+    <string name="notification_channel_missed_name">Missed Calls</string>
+    <string name="missed_call_callback">Call back</string>
+    <string name="missed_call_message">Message</string>
 </resources>

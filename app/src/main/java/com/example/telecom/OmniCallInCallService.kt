@@ -63,13 +63,16 @@ class OmniCallInCallService : InCallService() {
                 displayName = display.ifBlank { handle.ifBlank { "Unknown" } },
                 accountHandleId = accountHandleId
             )
-            // 2. Immediately present full-screen Incoming Call UI while BAL privilege is active
-            runCatching {
-                startActivity(
-                    Intent(this, IncomingCallActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
-                    }
-                )
+            // 2. Present full-screen Incoming Call UI when screen is off/locked or notifications are unavailable;
+            // otherwise Android displays the CallStyle heads-up mini popup over the user's active app.
+            if (CallNotificationManager.shouldLaunchFullScreenIncomingUi(this, isCellularTelecom = true)) {
+                runCatching {
+                    startActivity(
+                        Intent(this, IncomingCallActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                        }
+                    )
+                }
             }
             // 3. Enrich SIM carrier slot, contacts avatar, and FullScreenIntent heads-up notification
             syncCallState(call, state)
