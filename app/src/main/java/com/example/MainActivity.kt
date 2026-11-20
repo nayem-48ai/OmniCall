@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,7 +17,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.ui.Alignment
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Contacts
 import androidx.compose.material.icons.outlined.Dialpad
@@ -44,11 +43,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -70,6 +76,7 @@ import com.example.ui.recordings.RecordingsScreen
 import com.example.ui.settings.BlocklistScreen
 import com.example.ui.settings.HiFiAudioSettingsScreen
 import com.example.ui.settings.SipSettingsScreen
+import com.example.ui.settings.TelephonySettingsScreen
 import com.example.ui.theme.OmniCallTheme
 import com.example.ui.viewmodel.BlocklistViewModel
 import com.example.ui.viewmodel.ContactsViewModel
@@ -78,12 +85,15 @@ import com.example.ui.viewmodel.OmniCallViewModelFactory
 import com.example.ui.viewmodel.RecentsViewModel
 import com.example.ui.viewmodel.RecordingsViewModel
 import com.example.ui.viewmodel.SipSettingsViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
 @Serializable object DialerRoute
 @Serializable object RecentsRoute
 @Serializable object ContactsRoute
 @Serializable object SettingsRoute
+@Serializable object TelephonySettingsRoute
 @Serializable object RecordingsRoute
 @Serializable object HiFiAudioSettingsRoute
 @Serializable object BlocklistRoute
@@ -105,7 +115,7 @@ private val NAV_ITEMS = listOf(
 
 class MainActivity : ComponentActivity() {
 
-    private val incomingDialNumber = androidx.compose.runtime.mutableStateOf<String?>(null)
+    private val incomingDialNumber = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,6 +136,7 @@ class MainActivity : ComponentActivity() {
                 OmniCallRoot(
                     app = app,
                     factory = factory,
+                    activityStoreOwner = this@MainActivity,
                     initialDialNumber = incomingDialNumber.value
                 )
             }
@@ -150,28 +161,22 @@ class MainActivity : ComponentActivity() {
 private fun OmniCallRoot(
     app: OmniCallApplication,
     factory: OmniCallViewModelFactory,
+    activityStoreOwner: ViewModelStoreOwner,
     initialDialNumber: String?
 ) {
-    val dialerViewModel: DialerViewModel = viewModel(factory = factory)
-    val recentsViewModel: RecentsViewModel = viewModel(factory = factory)
-    val contactsViewModel: ContactsViewModel = viewModel(factory = factory)
-    val recordingsViewModel: RecordingsViewModel = viewModel(factory = factory)
-    val settingsViewModel: SipSettingsViewModel = viewModel(factory = factory)
-    val blocklistViewModel: BlocklistViewModel = viewModel(factory = factory)
-
+    // Only DialerViewModel is needed on frame-1 launch; secondary tab ViewModels initialize lazily when opened.
+    val dialerViewModel: DialerViewModel = viewModel(
+        viewModelStoreOwner = activityStoreOwner,
+        factory = factory
+    )
     val dialerState by dialerViewModel.uiState.collectAsStateWithLifecycle()
-    val recentsState by recentsViewModel.uiState.collectAsStateWithLifecycle()
-    val contactsState by contactsViewModel.uiState.collectAsStateWithLifecycle()
-    val recordingsState by recordingsViewModel.uiState.collectAsStateWithLifecycle()
-    val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
-    val blocklistState by blocklistViewModel.uiState.collectAsStateWithLifecycle()
+
+    var refreshTick by remember { mutableIntStateOf(0) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         dialerViewModel.refreshHardwareEnvironment()
-        settingsViewModel.refreshEnvironment()
-        contactsViewModel.refreshContacts()
-        recentsViewModel.refreshContactsIndex()
-        blocklistViewModel.refreshContacts()
+        refreshTick++
+        app.container.sipClientEngine.ensureBackgroundServiceIfRegistered()
     }
 
     val activeCall by app.container.activeCallCoordinator.activeCall.collectAsStateWithLifecycle()
@@ -183,7 +188,7 @@ private fun OmniCallRoot(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
         dialerViewModel.refreshHardwareEnvironment()
-        settingsViewModel.refreshEnvironment()
+        refreshTick++
     }
 
     val requestDefaultDialer: () -> Unit = {
@@ -192,17 +197,13 @@ private fun OmniCallRoot(
         }
     }
 
-    val promptedDefaultDialerOnce = androidx.compose.runtime.remember {
-        androidx.compose.runtime.mutableStateOf(false)
-    }
+    val promptedDefaultDialerOnce = remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
         dialerViewModel.refreshHardwareEnvironment()
-        settingsViewModel.refreshEnvironment()
-        contactsViewModel.refreshContacts()
-        recentsViewModel.refreshContactsIndex()
+        refreshTick++
         if (!promptedDefaultDialerOnce.value && !app.container.telecomCallManager.isDefaultDialer()) {
             promptedDefaultDialerOnce.value = true
             requestDefaultDialer()
@@ -212,9 +213,8 @@ private fun OmniCallRoot(
     val contactsPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) {
-        contactsViewModel.refreshContacts()
-        recentsViewModel.refreshContactsIndex()
-        blocklistViewModel.refreshContacts()
+        dialerViewModel.refreshHardwareEnvironment(forceContactsRefresh = true)
+        refreshTick++
     }
 
     LaunchedEffect(Unit) {
@@ -232,8 +232,21 @@ private fun OmniCallRoot(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
-        }.toTypedArray()
-        permissionLauncher.launch(perms)
+        }
+        val missingPerms = perms.filter { perm ->
+            ContextCompat.checkSelfPermission(app, perm) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missingPerms.isNotEmpty()) {
+            permissionLauncher.launch(missingPerms.toTypedArray())
+        } else {
+            val isDefault = withContext(Dispatchers.IO) {
+                app.container.telecomCallManager.isDefaultDialer()
+            }
+            if (!promptedDefaultDialerOnce.value && !isDefault) {
+                promptedDefaultDialerOnce.value = true
+                requestDefaultDialer()
+            }
+        }
     }
 
     LaunchedEffect(initialDialNumber) {
@@ -262,6 +275,8 @@ private fun OmniCallRoot(
             onAnswer = coordinator::answerIncomingCall,
             onDecline = coordinator::declineIncomingCall,
             onEndCall = coordinator::endActiveCall,
+            onCancelAutoRecall = coordinator::cancelAutoRecall,
+            onRecallNow = coordinator::triggerAutoRecallNow,
             onMinimize = coordinator::minimizeCallUi
         )
         return
@@ -272,7 +287,8 @@ private fun OmniCallRoot(
     val currentDestination = navBackStackEntry?.destination
     val isSettingsSubScreen = currentDestination?.hasRoute(RecordingsRoute::class) == true ||
         currentDestination?.hasRoute(HiFiAudioSettingsRoute::class) == true ||
-        currentDestination?.hasRoute(BlocklistRoute::class) == true
+        currentDestination?.hasRoute(BlocklistRoute::class) == true ||
+        currentDestination?.hasRoute(TelephonySettingsRoute::class) == true
 
     val navigateToTab: (Any) -> Unit = { route ->
         navController.navigate(route) {
@@ -282,6 +298,17 @@ private fun OmniCallRoot(
             launchSingleTop = true
             restoreState = true
         }
+    }
+
+    val requestStandardPermissions: () -> Unit = {
+        permissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.READ_CONTACTS
+            )
+        )
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -350,6 +377,14 @@ private fun OmniCallRoot(
                         )
                     }
                     composable<RecentsRoute> {
+                        val recentsViewModel: RecentsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val recentsState by recentsViewModel.uiState.collectAsStateWithLifecycle()
+                        LaunchedEffect(refreshTick) {
+                            recentsViewModel.refreshContactsIndex()
+                        }
                         RecentsScreen(
                             uiState = recentsState,
                             onSearchChange = recentsViewModel::setSearchQuery,
@@ -371,6 +406,14 @@ private fun OmniCallRoot(
                         )
                     }
                     composable<ContactsRoute> {
+                        val contactsViewModel: ContactsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val contactsState by contactsViewModel.uiState.collectAsStateWithLifecycle()
+                        LaunchedEffect(refreshTick) {
+                            contactsViewModel.refreshContacts()
+                        }
                         ContactsScreen(
                             uiState = contactsState,
                             viewModel = contactsViewModel,
@@ -385,26 +428,25 @@ private fun OmniCallRoot(
                                 navigateToTab(DialerRoute)
                             },
                             onContactsImported = {
-                                recentsViewModel.refreshContactsIndex()
-                                blocklistViewModel.refreshContacts()
+                                dialerViewModel.refreshHardwareEnvironment(forceContactsRefresh = true)
+                                refreshTick++
                             }
                         )
                     }
                     composable<SettingsRoute> {
+                        val settingsViewModel: SipSettingsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+                        LaunchedEffect(refreshTick) {
+                            settingsViewModel.refreshEnvironment()
+                        }
                         SipSettingsScreen(
                             uiState = settingsState,
                             viewModel = settingsViewModel,
                             onRequestDefaultDialer = requestDefaultDialer,
-                            onRequestPermissions = {
-                                permissionLauncher.launch(
-                                    arrayOf(
-                                        Manifest.permission.READ_PHONE_STATE,
-                                        Manifest.permission.CALL_PHONE,
-                                        Manifest.permission.RECORD_AUDIO,
-                                        Manifest.permission.READ_CONTACTS
-                                    )
-                                )
-                            },
+                            onRequestPermissions = requestStandardPermissions,
                             onOpenRecordings = {
                                 navController.navigate(RecordingsRoute)
                             },
@@ -413,10 +455,35 @@ private fun OmniCallRoot(
                             },
                             onOpenBlocklist = {
                                 navController.navigate(BlocklistRoute)
+                            },
+                            onOpenTelephonySettings = {
+                                navController.navigate(TelephonySettingsRoute)
                             }
                         )
                     }
+                    composable<TelephonySettingsRoute> {
+                        val settingsViewModel: SipSettingsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+                        LaunchedEffect(refreshTick) {
+                            settingsViewModel.refreshEnvironment()
+                        }
+                        TelephonySettingsScreen(
+                            uiState = settingsState,
+                            viewModel = settingsViewModel,
+                            onRequestDefaultDialer = requestDefaultDialer,
+                            onRequestPermissions = requestStandardPermissions,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
                     composable<RecordingsRoute> {
+                        val recordingsViewModel: RecordingsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val recordingsState by recordingsViewModel.uiState.collectAsStateWithLifecycle()
                         RecordingsScreen(
                             uiState = recordingsState,
                             viewModel = recordingsViewModel,
@@ -424,6 +491,11 @@ private fun OmniCallRoot(
                         )
                     }
                     composable<HiFiAudioSettingsRoute> {
+                        val settingsViewModel: SipSettingsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
                         HiFiAudioSettingsScreen(
                             uiState = settingsState,
                             viewModel = settingsViewModel,
@@ -431,6 +503,14 @@ private fun OmniCallRoot(
                         )
                     }
                     composable<BlocklistRoute> {
+                        val blocklistViewModel: BlocklistViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val blocklistState by blocklistViewModel.uiState.collectAsStateWithLifecycle()
+                        LaunchedEffect(refreshTick) {
+                            blocklistViewModel.refreshContacts()
+                        }
                         BlocklistScreen(
                             uiState = blocklistState,
                             viewModel = blocklistViewModel,
@@ -461,7 +541,9 @@ private fun OmniCallRoot(
                 onAnswer = coordinator::answerIncomingCall,
                 onDecline = coordinator::declineIncomingCall,
                 onToggleMute = coordinator::toggleMute,
-                onEndCall = coordinator::endActiveCall
+                onEndCall = coordinator::endActiveCall,
+                onCancelAutoRecall = coordinator::cancelAutoRecall,
+                onRecallNow = coordinator::triggerAutoRecallNow
             )
         }
     }

@@ -13,6 +13,7 @@ import com.example.domain.model.CallSourceType
 import com.example.domain.model.SipAccountModel
 import com.example.domain.model.SipRegistrationStatus
 import com.example.domain.model.SipTransport
+import com.example.telecom.SipBackgroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -192,7 +193,9 @@ class SipClientEngine(
     }
 
     init {
-        registerConnectivityWatcher()
+        scope.launch {
+            registerConnectivityWatcher()
+        }
     }
 
     private fun isActiveSocketOpen(transport: SipTransport?): Boolean = when (transport) {
@@ -385,8 +388,36 @@ class SipClientEngine(
                 startIncomingReader(account)
                 sendRegister(account)
                 startKeepAliveLoop(account)
+                SipBackgroundService.startOrUpdate(
+                    context = context,
+                    title = "SIP Connecting • ${account.displayName}",
+                    subtitle = "${account.sipUri} (${account.transport.label})"
+                )
             }
         }
+    }
+
+    fun reconnectActiveAccountIfNeeded() {
+        val acc = activeAccount ?: return
+        if (!acc.isEnabled) return
+        if (!isActiveSocketOpen(acc.transport)) {
+            startAccountRegistration(acc)
+        } else {
+            scope.launch {
+                sendNatKeepAlive(acc)
+                sendRegister(acc)
+            }
+        }
+    }
+
+    fun ensureBackgroundServiceIfRegistered() {
+        val acc = activeAccount ?: return
+        if (!acc.isEnabled) return
+        SipBackgroundService.startOrUpdate(
+            context = context,
+            title = "SIP Ready • ${acc.displayName}",
+            subtitle = "Listening in background • ${acc.sipUri}"
+        )
     }
 
     private fun startKeepAliveLoop(account: SipAccountModel) {
@@ -394,8 +425,12 @@ class SipClientEngine(
         keepAliveJob = scope.launch {
             var elapsedSec = 0
             while (isActive) {
-                delay(12_000L)
-                elapsedSec += 12
+                delay(9_000L)
+                elapsedSec += 9
+                if (!isActiveSocketOpen(account.transport) && dialogs.isEmpty()) {
+                    startAccountRegistration(account)
+                    break
+                }
                 val targetAddr = remoteHostAddress
                 val currentIp = if (targetAddr != null) {
                     SipAutoConfigEngine.resolveLocalIpv4ForRemote(targetAddr, account.port)
@@ -408,7 +443,7 @@ class SipClientEngine(
                     break
                 }
                 sendNatKeepAlive(account)
-                val refreshIntervalSec = (registeredExpiresSec / 2).coerceIn(20, 60)
+                val refreshIntervalSec = (registeredExpiresSec / 2).coerceIn(20, 55)
                 if (elapsedSec >= refreshIntervalSec) {
                     elapsedSec = 0
                     sendRegister(account)
@@ -621,6 +656,11 @@ class SipClientEngine(
                     sendRegister(account)
                 }
                 sipAccountRepository.updateRegistrationStatus(account.id, SipRegistrationStatus.REGISTERED)
+                SipBackgroundService.startOrUpdate(
+                    context = context,
+                    title = "SIP Ready • ${account.displayName}",
+                    subtitle = "Listening in background • ${account.sipUri}"
+                )
                 eventBus.publish(
                     OmniCallEvent.SipRegistrationChanged(
                         account.id,
@@ -1476,7 +1516,10 @@ class SipClientEngine(
     }
 
     fun stopTransport() {
+        activeAccount = null
+        activePassword = null
         stopTransportLocked()
+        SipBackgroundService.stop(context)
     }
 
     private fun stopTransportLocked() {

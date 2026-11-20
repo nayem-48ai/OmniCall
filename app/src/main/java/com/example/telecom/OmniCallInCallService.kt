@@ -22,6 +22,7 @@ class OmniCallInCallService : InCallService() {
 
     private var currentCall: Call? = null
     private var availableEndpoints: List<CallEndpoint> = emptyList()
+    private var lastDisconnectCode: Int? = null
 
     private val callCallback = object : Call.Callback() {
         override fun onStateChanged(call: Call, state: Int) {
@@ -49,6 +50,7 @@ class OmniCallInCallService : InCallService() {
         }
 
         currentCall = call
+        lastDisconnectCode = null
         call.registerCallback(callCallback)
         ActiveCallCoordinator.bindNativeInCallService(this, call)
 
@@ -65,11 +67,7 @@ class OmniCallInCallService : InCallService() {
             runCatching {
                 startActivity(
                     Intent(this, IncomingCallActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
                     }
                 )
             }
@@ -91,11 +89,13 @@ class OmniCallInCallService : InCallService() {
 
     override fun onCallRemoved(call: Call) {
         super.onCallRemoved(call)
+        val disconnectCode = call.details.disconnectCause?.code ?: lastDisconnectCode
         call.unregisterCallback(callCallback)
         if (currentCall == call) {
             currentCall = null
         }
-        coordinator()?.onNativeSimCallEnded()
+        lastDisconnectCode = null
+        coordinator()?.onNativeSimCallEnded(disconnectCode)
         ActiveCallCoordinator.unbindNativeInCallService()
     }
 
@@ -163,7 +163,10 @@ class OmniCallInCallService : InCallService() {
             Call.STATE_RINGING -> CallLifecycleState.RINGING_INCOMING
             Call.STATE_ACTIVE -> CallLifecycleState.ACTIVE
             Call.STATE_HOLDING -> CallLifecycleState.ON_HOLD
-            Call.STATE_DISCONNECTED -> CallLifecycleState.ENDED
+            Call.STATE_DISCONNECTED -> {
+                lastDisconnectCode = call.details.disconnectCause?.code ?: lastDisconnectCode
+                CallLifecycleState.ENDED
+            }
             else -> CallLifecycleState.DIALING
         }
         coordinator()?.onNativeSimCallUpdated(

@@ -35,8 +35,9 @@ class OmniCallScreeningService : CallScreeningService() {
         val isBlocked = when {
             repo == null || handleNumber.isBlank() -> false
             repo.isBlockedFast(handleNumber) -> true
+            repo.hasFastCacheReady() -> false
             else -> runBlocking {
-                withTimeoutOrNull(140L) {
+                withTimeoutOrNull(80L) {
                     withContext(Dispatchers.IO) {
                         runCatching { repo.isBlocked(handleNumber) }.getOrDefault(false)
                     }

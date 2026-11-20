@@ -1,6 +1,8 @@
 package com.example
 
+import android.telecom.DisconnectCause
 import com.example.audio.AudioCodecUtils
+import com.example.data.preferences.AppSettingsState
 import com.example.data.repository.BlocklistRepository
 import com.example.data.repository.CallLogItem
 import com.example.data.repository.ContactItem
@@ -595,6 +597,156 @@ class SipAndRoutingUnitTest {
                 lineBadge = "SIM 2 • Robi",
                 callerHandle = "+8801811223344",
                 displayTitle = "+8801811223344"
+            )
+        )
+    }
+
+    @Test
+    fun autoRecallDecision_triggersOnlyOnEligibleUnansweredOrRejectedOutgoingCalls() {
+        // Default settings: Auto Recall disabled by default with 5s timer
+        val defaultSettings = AppSettingsState()
+        assertFalse(defaultSettings.autoRecallEnabled)
+        assertEquals(5, defaultSettings.autoRecallDelaySeconds)
+
+        // Disabled -> never triggers
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = false,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.BUSY,
+                sipStatusCode = null,
+                attempt = 0
+            )
+        )
+
+        // SIP busy / declined / no answer -> triggers
+        assertTrue(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = null,
+                sipStatusCode = 486,
+                attempt = 0
+            )
+        )
+        assertTrue(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = null,
+                sipStatusCode = 603,
+                attempt = 1
+            )
+        )
+        assertTrue(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = null,
+                sipStatusCode = 480,
+                attempt = 2
+            )
+        )
+
+        // SIP 404/487/auth errors -> never triggers
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = null,
+                sipStatusCode = 404,
+                attempt = 0
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = null,
+                sipStatusCode = 487,
+                attempt = 0
+            )
+        )
+
+        // SIM busy / rejected / missed -> triggers
+        assertTrue(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.BUSY,
+                sipStatusCode = null,
+                attempt = 0
+            )
+        )
+        assertTrue(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.REJECTED,
+                sipStatusCode = null,
+                attempt = 0
+            )
+        )
+
+        // Local user hangup, connected call, incoming call, or attempt cap -> never triggers
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = true,
+                disconnectCode = DisconnectCause.LOCAL,
+                sipStatusCode = null,
+                attempt = 0
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = true,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.OTHER,
+                sipStatusCode = null,
+                attempt = 0
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.INCOMING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.MISSED,
+                sipStatusCode = null,
+                attempt = 0
+            )
+        )
+        assertFalse(
+            ActiveCallCoordinator.shouldTriggerAutoRecall(
+                enabled = true,
+                direction = CallDirection.OUTGOING,
+                wasConnected = false,
+                endedByLocalUser = false,
+                disconnectCode = DisconnectCause.BUSY,
+                sipStatusCode = null,
+                attempt = ActiveCallCoordinator.MAX_AUTO_RECALL_ATTEMPTS
             )
         )
     }

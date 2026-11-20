@@ -32,51 +32,63 @@ import kotlinx.coroutines.launch
  * Clean Constructor-Injected App Container keeping OmniCall modular and testable without heavy DI boilerplate.
  */
 class AppContainer(application: Application) {
-    val database = OmniCallDatabase.getInstance(application)
-    val credentialVault = KeystoreCredentialVault(application)
-    val preferencesRepository = AppPreferencesRepository(application)
+    val database: OmniCallDatabase by lazy { OmniCallDatabase.getInstance(application) }
+    val credentialVault: KeystoreCredentialVault by lazy { KeystoreCredentialVault(application) }
+    val preferencesRepository: AppPreferencesRepository by lazy { AppPreferencesRepository(application) }
 
-    val sipAccountRepository = SipAccountRepository(database.sipAccountDao(), credentialVault)
-    val callLogRepository = CallLogRepository(database.callLogDao())
-    val recordingRepository = RecordingRepository(database.recordingDao())
-    val blocklistRepository = BlocklistRepository(application, database.blocklistDao())
-    val contactsRepository = ContactsRepository(application)
+    val sipAccountRepository: SipAccountRepository by lazy {
+        SipAccountRepository(database.sipAccountDao(), credentialVault)
+    }
+    val callLogRepository: CallLogRepository by lazy { CallLogRepository(database.callLogDao()) }
+    val recordingRepository: RecordingRepository by lazy { RecordingRepository(database.recordingDao()) }
+    val blocklistRepository: BlocklistRepository by lazy {
+        BlocklistRepository(application, database.blocklistDao())
+    }
+    val contactsRepository: ContactsRepository by lazy { ContactsRepository(application) }
 
     val eventBus: CallEventBus = DefaultCallEventBus()
 
-    val dnsSrvResolver = DnsSrvResolver(application)
-    val sipAutoConfigEngine = SipAutoConfigEngine(dnsSrvResolver)
-    val sipClientEngine = SipClientEngine(application, sipAccountRepository, eventBus)
-    val sipBalanceFetcher = SipBalanceFetcher(sipAccountRepository)
+    val dnsSrvResolver: DnsSrvResolver by lazy { DnsSrvResolver(application) }
+    val sipAutoConfigEngine: SipAutoConfigEngine by lazy { SipAutoConfigEngine(dnsSrvResolver) }
+    val sipClientEngine: SipClientEngine by lazy {
+        SipClientEngine(application, sipAccountRepository, eventBus)
+    }
+    val sipBalanceFetcher: SipBalanceFetcher by lazy { SipBalanceFetcher(sipAccountRepository) }
 
-    val rtpAudioEngine = RtpAudioEngine(application)
-    val dualStreamCallRecorder = DualStreamCallRecorder(
-        context = application,
-        audioStreamTap = rtpAudioEngine,
-        recordingRepository = recordingRepository,
-        eventBus = eventBus
-    )
+    val rtpAudioEngine: RtpAudioEngine by lazy { RtpAudioEngine(application) }
+    val dualStreamCallRecorder: DualStreamCallRecorder by lazy {
+        DualStreamCallRecorder(
+            context = application,
+            audioStreamTap = rtpAudioEngine,
+            recordingRepository = recordingRepository,
+            eventBus = eventBus
+        )
+    }
 
-    val simSubscriptionDetector = SimSubscriptionDetector(application)
-    val telecomCallManager = TelecomCallManager(application, simSubscriptionDetector)
-    val callNotificationManager = CallNotificationManager(application)
-    val proximityWakeLockManager = ProximitySensorWakeLockManager(application)
+    val simSubscriptionDetector: SimSubscriptionDetector by lazy { SimSubscriptionDetector(application) }
+    val telecomCallManager: TelecomCallManager by lazy { TelecomCallManager(application, simSubscriptionDetector) }
+    val callNotificationManager: CallNotificationManager by lazy { CallNotificationManager(application) }
+    val proximityWakeLockManager: ProximitySensorWakeLockManager by lazy {
+        ProximitySensorWakeLockManager(application)
+    }
 
-    val activeCallCoordinator = ActiveCallCoordinator(
-        context = application,
-        telecomCallManager = telecomCallManager,
-        simDetector = simSubscriptionDetector,
-        contactsRepository = contactsRepository,
-        blocklistRepository = blocklistRepository,
-        sipClientEngine = sipClientEngine,
-        rtpAudioEngine = rtpAudioEngine,
-        callRecorder = dualStreamCallRecorder,
-        callLogRepository = callLogRepository,
-        prefsRepository = preferencesRepository,
-        notificationManager = callNotificationManager,
-        proximityWakeLockManager = proximityWakeLockManager,
-        eventBus = eventBus
-    )
+    val activeCallCoordinator: ActiveCallCoordinator by lazy {
+        ActiveCallCoordinator(
+            context = application,
+            telecomCallManager = telecomCallManager,
+            simDetector = simSubscriptionDetector,
+            contactsRepository = contactsRepository,
+            blocklistRepository = blocklistRepository,
+            sipClientEngine = sipClientEngine,
+            rtpAudioEngine = rtpAudioEngine,
+            callRecorder = dualStreamCallRecorder,
+            callLogRepository = callLogRepository,
+            prefsRepository = preferencesRepository,
+            notificationManager = callNotificationManager,
+            proximityWakeLockManager = proximityWakeLockManager,
+            eventBus = eventBus
+        )
+    }
 }
 
 class OmniCallApplication : Application() {
@@ -89,15 +101,15 @@ class OmniCallApplication : Application() {
         super.onCreate()
         container = AppContainer(this)
 
-        // Pre-warm channels, SIM cache, blocklist cache, and Telecom bindings off the main thread
-        // so cold-start incoming cellular calls present OmniCall UI instantaneously.
+        // Pre-warm channels, SIM cache, blocklist cache, and SIP listener off the main thread
+        // so both cold-start UI launch and background incoming SIM/SIP calls respond instantly.
         appScope.launch {
-            runCatching { container.callNotificationManager.ensureChannels() }
-            runCatching { container.telecomCallManager.registerSelfManagedSipAccount() }
             runCatching { container.blocklistRepository.warmupCache() }
+            runCatching { container.callNotificationManager.ensureChannels() }
             runCatching { container.simSubscriptionDetector.detectActiveSims() }
+            runCatching { container.telecomCallManager.registerSelfManagedSipAccount() }
 
-            val defaultSip = container.sipAccountRepository.getDefaultActiveAccount()
+            val defaultSip = runCatching { container.sipAccountRepository.getDefaultActiveAccount() }.getOrNull()
             if (defaultSip != null) {
                 container.sipClientEngine.startAccountRegistration(defaultSip)
                 if (defaultSip.balancePreset != SipBalancePreset.NONE && defaultSip.showBalanceInKeypad) {

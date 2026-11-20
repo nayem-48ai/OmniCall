@@ -1,5 +1,9 @@
 package com.example.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +31,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoFixHigh
+import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -39,6 +44,7 @@ import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.PermDeviceInformation
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.SimCard
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -78,7 +84,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.SipAccountModel
 import com.example.domain.model.SipBalancePreset
 import com.example.domain.model.SipRegistrationStatus
@@ -93,6 +98,8 @@ import com.example.ui.viewmodel.SipFormState
 import com.example.ui.viewmodel.SipSettingsUiState
 import com.example.ui.viewmodel.SipSettingsViewModel
 
+private val AUTO_RECALL_PRESETS = listOf(3, 5, 10, 15, 30)
+
 @Composable
 fun SipSettingsScreen(
     uiState: SipSettingsUiState,
@@ -102,6 +109,7 @@ fun SipSettingsScreen(
     onOpenRecordings: () -> Unit,
     onOpenHiFiAudioSettings: () -> Unit,
     onOpenBlocklist: () -> Unit,
+    onOpenTelephonySettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val env = uiState.environment
@@ -374,9 +382,83 @@ fun SipSettingsScreen(
                 }
             }
 
-            // 1. Hardware SIM Detection & Default Dialer Card
+            // 0. Auto Recall Section (first Calling/Telephony control)
             item {
-                SettingsSectionCard(title = "Telephony & SIM Slots") {
+                SettingsSectionCard(
+                    title = "Auto Recall",
+                    trailingAction = {
+                        Switch(
+                            checked = uiState.settings.autoRecallEnabled,
+                            onCheckedChange = { viewModel.setAutoRecallEnabled(it) },
+                            modifier = Modifier.testTag("toggle_auto_recall")
+                        )
+                    }
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Replay,
+                            contentDescription = null,
+                            tint = if (uiState.settings.autoRecallEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Text(
+                            text = "Automatically redial unanswered, declined, or busy outgoing calls after a short countdown.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Countdown timer: ${uiState.settings.autoRecallDelaySeconds}s",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(AUTO_RECALL_PRESETS, key = { it }) { sec ->
+                            FilterChip(
+                                selected = uiState.settings.autoRecallDelaySeconds == sec,
+                                onClick = { viewModel.setAutoRecallDelaySeconds(sec) },
+                                label = { Text("${sec}s") },
+                                modifier = Modifier.testTag("auto_recall_delay_$sec")
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 1. Hardware SIM Detection & Default Dialer Card (clickable -> opens TelephonySettingsScreen with Make Calls With)
+            item {
+                SettingsSectionCard(
+                    title = "Telephony & SIM Slots",
+                    onClick = onOpenTelephonySettings,
+                    cardTestTag = "settings_open_telephony_card",
+                    trailingAction = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = effectiveMode.title,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                contentDescription = "Open Telephony & SIM Slots",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -473,67 +555,17 @@ fun SipSettingsScreen(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Tap to open Make Calls With (${availableModes.size} mode${if (availableModes.size == 1) "" else "s"} detected)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
 
-            // 2. Dynamic Outgoing Call Routing Modes (1..4 modes auto-detected)
-            item {
-                SettingsSectionCard(
-                    title = "Make Calls With (${availableModes.size} mode${if (availableModes.size == 1) "" else "s"} detected)"
-                ) {
-                    if (availableModes.isEmpty()) {
-                        Text(
-                            text = "Add a SIP account or grant SIM permissions to choose your default outgoing line.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        availableModes.forEach { mode ->
-                            val subtitle = when (mode) {
-                                OutgoingRoutingMode.SIM_1 ->
-                                    uiState.simSlots.getOrNull(0)?.carrierName?.ifBlank { "Cellular Slot 1" }
-                                        ?: "Cellular Slot 1"
-                                OutgoingRoutingMode.SIM_2 ->
-                                    uiState.simSlots.getOrNull(1)?.carrierName?.ifBlank { "Cellular Slot 2" }
-                                        ?: "Cellular Slot 2"
-                                OutgoingRoutingMode.SIP ->
-                                    uiState.accounts.firstOrNull { it.isEnabled }?.sipUri ?: "Configured VoIP line"
-                                OutgoingRoutingMode.ASK_EVERY_TIME ->
-                                    "Show line selector whenever placing a call"
-                            }
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { viewModel.setOutgoingRoutingMode(mode) }
-                                    .padding(vertical = 6.dp)
-                                    .testTag("routing_mode_option_${mode.name.lowercase()}"),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                RadioButton(
-                                    selected = effectiveMode == mode,
-                                    onClick = { viewModel.setOutgoingRoutingMode(mode) }
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Column {
-                                    Text(
-                                        text = mode.title,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                    Text(
-                                        text = subtitle,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. SIP Accounts & Smart Auto-Configuration
+            // 2. SIP Accounts & Smart Auto-Configuration
             item {
                 SettingsSectionCard(
                     title = "SIP / VoIP Accounts",
@@ -576,6 +608,28 @@ fun SipSettingsScreen(
                                 health = uiState.networkHealth,
                                 isChecking = uiState.isCheckingNetwork,
                                 onTestNetwork = { viewModel.checkSipNetworkHealth(primarySip) }
+                            )
+
+                            BackgroundSipKeepAliveBanner(
+                                onOpenBatterySettings = {
+                                    val batteryIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                    } else {
+                                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                            data = Uri.fromParts("package", context.packageName, null)
+                                        }
+                                    }
+                                    runCatching { context.startActivity(batteryIntent) }
+                                        .onFailure {
+                                            runCatching {
+                                                context.startActivity(
+                                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                                        data = Uri.fromParts("package", context.packageName, null)
+                                                    }
+                                                )
+                                            }
+                                        }
+                                }
                             )
                         }
                     }
@@ -789,15 +843,68 @@ private fun SipNetworkHealthBanner(
 }
 
 @Composable
+private fun BackgroundSipKeepAliveBanner(
+    onOpenBatterySettings: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.BatterySaver,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Background Incoming SIP",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Allow unrestricted battery usage so incoming SIP calls arrive even when minimized",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            OutlinedButton(
+                onClick = onOpenBatterySettings,
+                modifier = Modifier.testTag("sip_battery_settings_button")
+            ) {
+                Text("Allow", maxLines = 1, softWrap = false)
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsSectionCard(
     title: String,
+    onClick: (() -> Unit)? = null,
+    cardTestTag: String? = null,
     trailingAction: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
+    val baseModifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(20.dp))
+        .let { m -> if (onClick != null) m.clickable(onClick = onClick) else m }
+        .let { m -> if (cardTestTag != null) m.testTag(cardTestTag) else m }
+
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-        modifier = Modifier.fillMaxWidth()
+        modifier = baseModifier
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(

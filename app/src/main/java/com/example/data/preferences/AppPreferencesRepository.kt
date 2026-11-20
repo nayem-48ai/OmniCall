@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.domain.model.OutgoingRoutingMode
@@ -26,6 +27,8 @@ data class AppSettingsState(
     val recordingType: RecordingType = RecordingType.INTERNAL_AND_EXTERNAL,
     val recordingEngine: RecordingEngine = RecordingEngine.AUTO,
     val autoCallRecording: Boolean = false,
+    val autoRecallEnabled: Boolean = false,
+    val autoRecallDelaySeconds: Int = 5,
     val preferWidebandCodecs: Boolean = true,
     val enableHardwareAec: Boolean = true,
     val enableHardwareNs: Boolean = true,
@@ -43,6 +46,8 @@ class AppPreferencesRepository(private val context: Context) {
         val RECORDING_TYPE = stringPreferencesKey("recording_type")
         val RECORDING_ENGINE = stringPreferencesKey("recording_engine")
         val AUTO_CALL_RECORDING = booleanPreferencesKey("auto_call_recording")
+        val AUTO_RECALL_ENABLED = booleanPreferencesKey("auto_recall_enabled")
+        val AUTO_RECALL_DELAY_SECONDS = intPreferencesKey("auto_recall_delay_seconds")
         val WIDEBAND_CODECS = booleanPreferencesKey("prefer_wideband_codecs")
         val HARDWARE_AEC = booleanPreferencesKey("enable_hardware_aec")
         val HARDWARE_NS = booleanPreferencesKey("enable_hardware_ns")
@@ -67,6 +72,8 @@ class AppPreferencesRepository(private val context: Context) {
                 runCatching { RecordingEngine.valueOf(it) }.getOrNull()
             } ?: RecordingEngine.AUTO,
             autoCallRecording = prefs[Keys.AUTO_CALL_RECORDING] ?: false,
+            autoRecallEnabled = prefs[Keys.AUTO_RECALL_ENABLED] ?: false,
+            autoRecallDelaySeconds = (prefs[Keys.AUTO_RECALL_DELAY_SECONDS] ?: 5).coerceIn(3, 60),
             preferWidebandCodecs = prefs[Keys.WIDEBAND_CODECS] ?: true,
             enableHardwareAec = prefs[Keys.HARDWARE_AEC] ?: true,
             enableHardwareNs = prefs[Keys.HARDWARE_NS] ?: true,
@@ -99,6 +106,14 @@ class AppPreferencesRepository(private val context: Context) {
 
     suspend fun setAutoCallRecording(enabled: Boolean) {
         context.appPrefsDataStore.edit { it[Keys.AUTO_CALL_RECORDING] = enabled }
+    }
+
+    suspend fun setAutoRecallEnabled(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.AUTO_RECALL_ENABLED] = enabled }
+    }
+
+    suspend fun setAutoRecallDelaySeconds(seconds: Int) {
+        context.appPrefsDataStore.edit { it[Keys.AUTO_RECALL_DELAY_SECONDS] = seconds.coerceIn(3, 60) }
     }
 
     suspend fun setAudioProcessing(

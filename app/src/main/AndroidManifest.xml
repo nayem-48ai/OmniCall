@@ -125,6 +125,12 @@
             android:exported="false"
             android:foregroundServiceType="phoneCall|microphone" />
 
+        <!-- Persistent background SIP listener keeping VoIP registration & incoming INVITE socket active -->
+        <service
+            android:name=".telecom.SipBackgroundService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall" />
+
         <!-- Scoped Storage FileProvider for sharing local recordings -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -40,6 +40,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.BluetoothAudio
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.CallEnd
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Dialpad
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -50,15 +51,21 @@ import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhoneInTalk
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -75,6 +82,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -123,6 +131,8 @@ fun InCallScreen(
     onAnswer: () -> Unit,
     onDecline: () -> Unit,
     onEndCall: () -> Unit,
+    onCancelAutoRecall: () -> Unit = {},
+    onRecallNow: () -> Unit = {},
     onMinimize: (() -> Unit)? = null,
     isNearEar: Boolean = false,
     modifier: Modifier = Modifier
@@ -299,6 +309,7 @@ fun InCallScreen(
                                 CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
                                 CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
                                 CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
+                                CallLifecycleState.AUTO_RECALL_COUNTDOWN -> "Recalling in ${callState.autoRecallRemainingSec}s"
                                 else -> ""
                             },
                             style = MonoTelemetryStyle,
@@ -415,6 +426,8 @@ fun InCallScreen(
                             CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
                             CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
                             CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
+                            CallLifecycleState.AUTO_RECALL_COUNTDOWN ->
+                                "${callState.autoRecallReason.ifBlank { "No answer" }} • Recalling in ${callState.autoRecallRemainingSec}s"
                             CallLifecycleState.ENDED -> "Call Ended"
                             CallLifecycleState.IDLE -> ""
                         },
@@ -454,12 +467,22 @@ fun InCallScreen(
                 }
             }
 
-            // Bottom Action Controls (Phone by Google Swipe Pill vs Keypad vs Standard 6-tile Grid)
+            // Bottom Action Controls (Phone by Google Swipe Pill vs Auto Recall Countdown vs Keypad vs 6-tile Grid)
             if (callState.lifecycle == CallLifecycleState.RINGING_INCOMING) {
                 IncomingSwipeAnswerBar(
                     onAnswer = onAnswer,
                     onDecline = onDecline,
                     modifier = Modifier.padding(bottom = 24.dp)
+                )
+            } else if (callState.lifecycle == CallLifecycleState.AUTO_RECALL_COUNTDOWN) {
+                AutoRecallCountdownDock(
+                    remainingSec = callState.autoRecallRemainingSec,
+                    totalSec = callState.autoRecallTotalSec,
+                    reason = callState.autoRecallReason,
+                    attempt = callState.autoRecallAttempt,
+                    onCancel = onCancelAutoRecall,
+                    onRecallNow = onRecallNow,
+                    modifier = Modifier.padding(bottom = 18.dp)
                 )
             } else if (showDtmfPad) {
                 // Google Phone / Zoiper-style full regular In-Call Dialpad inside elevated dock
@@ -1081,6 +1104,154 @@ private fun IncomingSwipeAnswerBar(
 }
 
 /**
+ * Elevated Google-style Auto Recall countdown dock shown after an unanswered/declined/busy outgoing call.
+ */
+@Composable
+private fun AutoRecallCountdownDock(
+    remainingSec: Int,
+    totalSec: Int,
+    reason: String,
+    attempt: Int,
+    onCancel: () -> Unit,
+    onRecallNow: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val safeTotal = totalSec.coerceAtLeast(1)
+    val targetFraction = (remainingSec.toFloat() / safeTotal.toFloat()).coerceIn(0f, 1f)
+    val animatedProgress by animateFloatAsState(
+        targetValue = targetFraction,
+        animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+        label = "auto_recall_progress"
+    )
+
+    Surface(
+        shape = RoundedCornerShape(32.dp),
+        color = lerp(InCallGradientBottom, Color.White, 0.08f).copy(alpha = 0.94f),
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                color = Color.White.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(32.dp)
+            )
+            .testTag("in_call_auto_recall_dock")
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 22.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = SignalConnected.copy(alpha = 0.18f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Replay,
+                        contentDescription = null,
+                        tint = SignalConnected,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "Auto Recall • Attempt $attempt/${com.example.telecom.ActiveCallCoordinator.MAX_AUTO_RECALL_ATTEMPTS}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = SignalConnected
+                    )
+                }
+            }
+
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(92.dp)
+            ) {
+                CircularProgressIndicator(
+                    progress = { 1f },
+                    modifier = Modifier.fillMaxSize(),
+                    strokeWidth = 6.dp,
+                    color = Color.White.copy(alpha = 0.14f)
+                )
+                CircularProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier.fillMaxSize(),
+                    strokeWidth = 6.dp,
+                    strokeCap = StrokeCap.Round,
+                    color = SignalConnected
+                )
+                Text(
+                    text = "${remainingSec}s",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    modifier = Modifier.testTag("auto_recall_countdown_seconds")
+                )
+            }
+
+            Text(
+                text = "${reason.ifBlank { "No answer" }} • Calling again in ${remainingSec}s",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.85f),
+                textAlign = TextAlign.Center
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    shape = RoundedCornerShape(28.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        Color.White.copy(alpha = 0.28f)
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(54.dp)
+                        .testTag("in_call_cancel_recall_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Cancel", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+
+                Button(
+                    onClick = onRecallNow,
+                    shape = RoundedCornerShape(28.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SignalConnected,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(54.dp)
+                        .testTag("in_call_recall_now_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Call,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Call Now", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+/**
  * Phone by Google style floating call mini window shown inside the app when a call is minimized.
  */
 @Composable
@@ -1092,9 +1263,12 @@ fun CallMiniWindowCard(
     onDecline: () -> Unit,
     onToggleMute: () -> Unit,
     onEndCall: () -> Unit,
+    onCancelAutoRecall: () -> Unit = {},
+    onRecallNow: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isIncoming = callState.lifecycle == CallLifecycleState.RINGING_INCOMING
+    val isAutoRecall = callState.lifecycle == CallLifecycleState.AUTO_RECALL_COUNTDOWN
     val pulseTransition = rememberInfiniteTransition(label = "mini_window_pulse")
     val pulseAlpha by pulseTransition.animateFloat(
         initialValue = 0.4f,
@@ -1118,6 +1292,8 @@ fun CallMiniWindowCard(
         CallLifecycleState.RINGING_OUTGOING -> "Ringing • $conciseBadge"
         CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
         CallLifecycleState.ACTIVE -> "${formatElapsed(elapsedSeconds)} • $conciseBadge"
+        CallLifecycleState.AUTO_RECALL_COUNTDOWN ->
+            "${callState.autoRecallReason.ifBlank { "Auto Recall" }} • ${callState.autoRecallRemainingSec}s"
         else -> conciseBadge
     }
 
@@ -1154,7 +1330,7 @@ fun CallMiniWindowCard(
                     modifier = Modifier
                         .size(11.dp)
                         .clip(CircleShape)
-                        .background(if (isIncoming) SignalConnected.copy(alpha = pulseAlpha) else SignalConnected)
+                        .background(if (isIncoming || isAutoRecall) SignalConnected.copy(alpha = pulseAlpha) else SignalConnected)
                         .border(1.5.dp, InCallGradientTop, CircleShape)
                 )
             }
@@ -1174,7 +1350,7 @@ fun CallMiniWindowCard(
                 Text(
                     text = statusText,
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isIncoming) SignalConnected else Color.White.copy(alpha = 0.78f),
+                    color = if (isIncoming || isAutoRecall) SignalConnected else Color.White.copy(alpha = 0.78f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -1212,6 +1388,41 @@ fun CallMiniWindowCard(
                     Icon(
                         imageVector = Icons.Rounded.Call,
                         contentDescription = "Answer call",
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            } else if (isAutoRecall) {
+                FilledIconButton(
+                    onClick = onCancelAutoRecall,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_window_cancel_recall_button"),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = SignalRecording,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Cancel Auto Recall",
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                FilledIconButton(
+                    onClick = onRecallNow,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("mini_window_recall_now_button"),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = SignalConnected,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Call,
+                        contentDescription = "Recall now",
                         modifier = Modifier.size(22.dp)
                     )
                 }

@@ -101,6 +101,7 @@ class ActiveCallCoordinator(
 
     private var timerJob: Job? = null
     private var telemetryJob: Job? = null
+    private var recallJob: Job? = null
     private var localRtpPort: Int = 40002
     private var activeSipAccount: SipAccountModel? = null
     private var activeCallDirection: CallDirection = CallDirection.OUTGOING
@@ -108,6 +109,10 @@ class ActiveCallCoordinator(
     private var autoRecordingTriggeredForCallId: String? = null
     private var pendingSipFallbackQueue: ArrayDeque<String> = ArrayDeque()
     private var activeSipFallbackAccount: SipAccountModel? = null
+    private var lastOutgoingDestination: String? = null
+    private var lastOutgoingRoute: ResolvedOutgoingRoute? = null
+    private var endedByLocalUser: Boolean = false
+    private var currentRecallAttempt: Int = 0
     @Volatile
     private var lastExplicitAudioSelectMs: Long = 0L
 
@@ -180,12 +185,23 @@ class ActiveCallCoordinator(
                             } else {
                                 pendingSipFallbackQueue.clear()
                                 activeSipFallbackAccount = null
-                                if (outcome.showErrorBanner) {
+                                val autoRecallOn = prefsRepository.settingsFlow.first().autoRecallEnabled
+                                val canRecall = shouldTriggerAutoRecall(
+                                    enabled = autoRecallOn,
+                                    direction = activeCallDirection,
+                                    wasConnected = _activeCall.value.connectedAtEpochMs != null,
+                                    endedByLocalUser = endedByLocalUser,
+                                    disconnectCode = null,
+                                    sipStatusCode = event.statusCode,
+                                    attempt = currentRecallAttempt
+                                )
+                                if (!canRecall && outcome.showErrorBanner) {
                                     _callErrorEvents.tryEmit(outcome.userMessage)
                                 }
                                 finalizeAndClearCall(
                                     reason = outcome.userMessage,
-                                    holdStatusMs = if (!outcome.showErrorBanner) 1050L else 200L
+                                    holdStatusMs = if (canRecall) 0L else if (!outcome.showErrorBanner) 1050L else 200L,
+                                    allowAutoRecall = canRecall
                                 )
                             }
                         }
@@ -245,8 +261,31 @@ class ActiveCallCoordinator(
     }
 
     fun placeCall(destination: String, route: ResolvedOutgoingRoute) {
+        placeCallInternal(
+            destination = destination,
+            route = route,
+            recallAttempt = 0,
+            cancelPendingRecall = true
+        )
+    }
+
+    private fun placeCallInternal(
+        destination: String,
+        route: ResolvedOutgoingRoute,
+        recallAttempt: Int,
+        cancelPendingRecall: Boolean
+    ) {
         val trimmed = destination.trim()
         if (trimmed.isBlank()) return
+
+        if (cancelPendingRecall) {
+            recallJob?.cancel()
+            recallJob = null
+        }
+        currentRecallAttempt = recallAttempt
+        lastOutgoingDestination = trimmed
+        lastOutgoingRoute = route
+        endedByLocalUser = false
 
         when (route) {
             is ResolvedOutgoingRoute.CellularSim -> {
@@ -281,14 +320,15 @@ class ActiveCallCoordinator(
                     routeBadge = route.sim.fullLabel,
                     lifecycle = CallLifecycleState.DIALING,
                     isIncoming = false,
-                    availableAudioRoutes = rtpAudioEngine.getAvailableAudioRoutes(),
                     telemetry = AudioQualityTelemetry(
                         codecName = "Cellular HD",
                         transportLabel = route.sim.shortLabel
                     ),
-                    statusMessage = "Dialing on ${route.sim.shortLabel}..."
+                    statusMessage = "Dialing on ${route.sim.shortLabel}...",
+                    autoRecallAttempt = recallAttempt
                 )
                 resolveContactInfoAsync(trimmed)
+                refreshAudioRoutesAsync()
             }
 
             is ResolvedOutgoingRoute.SipAccount -> {
@@ -307,6 +347,9 @@ class ActiveCallCoordinator(
                     when (val validation = sipClientEngine.validateOutgoingTransport(account, sipDestination)) {
                         is SipTransportValidationResult.Invalid -> {
                             _callErrorEvents.emit(validation.reason)
+                            if (_activeCall.value.lifecycle == CallLifecycleState.AUTO_RECALL_COUNTDOWN) {
+                                _activeCall.value = ActiveCallState()
+                            }
                             return@launch
                         }
                         is SipTransportValidationResult.Valid -> {
@@ -327,14 +370,15 @@ class ActiveCallCoordinator(
                                 routeBadge = "${account.displayName} • ${validation.transport.label}",
                                 lifecycle = CallLifecycleState.DIALING,
                                 isIncoming = false,
-                                availableAudioRoutes = rtpAudioEngine.getAvailableAudioRoutes(),
                                 telemetry = AudioQualityTelemetry(
                                     codecName = "Negotiating SDP...",
                                     transportLabel = "${validation.transport.label}:${validation.port}"
                                 ),
-                                statusMessage = "Checking ${sipClientEngine.describeCurrentNetwork()}..."
+                                statusMessage = "Checking ${sipClientEngine.describeCurrentNetwork()}...",
+                                autoRecallAttempt = recallAttempt
                             )
                             resolveContactInfoAsync(trimmed)
+                            refreshAudioRoutesAsync()
 
                             VoipCallForegroundService.startOrUpdate(
                                 context = context,
@@ -393,6 +437,18 @@ class ActiveCallCoordinator(
         }
     }
 
+    private fun refreshAudioRoutesAsync() {
+        scope.launch(Dispatchers.IO) {
+            val routes = rtpAudioEngine.getAvailableAudioRoutes()
+            if (routes.isNotEmpty()) {
+                _activeCall.update { cur ->
+                    if (cur.lifecycle == CallLifecycleState.IDLE) cur
+                    else cur.copy(availableAudioRoutes = routes)
+                }
+            }
+        }
+    }
+
     private fun resolveContactInfoAsync(numberOrUri: String) {
         scope.launch {
             val info = contactsRepository.lookupContactInfo(numberOrUri)
@@ -440,7 +496,9 @@ class ActiveCallCoordinator(
     }
 
     private suspend fun handleIncomingSipInvite(event: SipSignalingEvent.IncomingInvite) {
-        if (blocklistRepository.isBlocked(event.fromUri)) {
+        if (blocklistRepository.isBlockedFast(event.fromUri) ||
+            (!blocklistRepository.hasFastCacheReady() && blocklistRepository.isBlocked(event.fromUri))
+        ) {
             sipClientEngine.terminateCall(event.callId)
             return
         }
@@ -460,25 +518,27 @@ class ActiveCallCoordinator(
             }
         }
 
+        recallJob?.cancel()
+        recallJob = null
+        currentRecallAttempt = 0
+        endedByLocalUser = false
         activeCallDirection = CallDirection.INCOMING
         currentCallLogged = false
         val account = event.account
         activeSipAccount = account
         val badge = "${account.displayName} • ${account.transport.label}"
-        val info = contactsRepository.lookupContactInfo(event.fromUri)
-        val resolvedName = info?.displayName ?: event.displayName
+        val initialName = event.displayName.ifBlank { event.fromUri }
 
         _isCallUiMinimized.value = false
         _activeCall.value = ActiveCallState(
             callId = event.callId,
             remoteHandle = event.fromUri,
-            displayName = resolvedName,
-            remotePhotoUri = info?.photoUri,
+            displayName = initialName,
+            remotePhotoUri = null,
             sourceType = CallSourceType.SIP,
             routeBadge = badge,
             lifecycle = CallLifecycleState.RINGING_INCOMING,
             isIncoming = true,
-            availableAudioRoutes = rtpAudioEngine.getAvailableAudioRoutes(),
             statusMessage = "Incoming VoIP Call"
         )
 
@@ -487,24 +547,26 @@ class ActiveCallCoordinator(
         clearAllVoipConnections()
         VoipCallForegroundService.startOrUpdate(
             context = context,
-            title = resolvedName,
+            title = initialName,
             subtitle = "Incoming $badge",
             isRecording = false
         )
         notificationManager.showIncomingCallNotification(
-            callerName = resolvedName,
+            callerName = initialName,
             callerHandle = event.fromUri,
             lineBadge = badge,
-            callerPhotoUri = info?.photoUri,
+            callerPhotoUri = null,
             isCellularTelecom = false
         )
         runCatching {
             context.startActivity(
                 Intent(context, IncomingCallActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
                 }
             )
         }
+        resolveContactInfoAsync(event.fromUri)
+        refreshAudioRoutesAsync()
     }
 
     fun answerIncomingCall() {
@@ -529,11 +591,12 @@ class ActiveCallCoordinator(
 
     fun declineIncomingCall() {
         notificationManager.cancelIncomingNotification()
+        endedByLocalUser = true
         val current = _activeCall.value
         if (current.sourceType != CallSourceType.SIP) {
             activeCallDirection = CallDirection.MISSED
             nativeInCallRef?.get()?.disconnect()
-            onNativeSimCallEnded()
+            onNativeSimCallEnded(DisconnectCause.LOCAL)
             return
         }
         activeCallDirection = CallDirection.MISSED
@@ -863,10 +926,16 @@ class ActiveCallCoordinator(
     fun endActiveCall() {
         val current = _activeCall.value
         if (current.lifecycle == CallLifecycleState.IDLE) return
+        if (current.lifecycle == CallLifecycleState.AUTO_RECALL_COUNTDOWN) {
+            cancelAutoRecall()
+            return
+        }
+
+        endedByLocalUser = true
 
         if (current.sourceType != CallSourceType.SIP) {
             nativeInCallRef?.get()?.disconnect()
-            onNativeSimCallEnded()
+            onNativeSimCallEnded(DisconnectCause.LOCAL)
             return
         }
 
@@ -887,6 +956,10 @@ class ActiveCallCoordinator(
         displayName: String,
         accountHandleId: String?
     ) {
+        recallJob?.cancel()
+        recallJob = null
+        currentRecallAttempt = 0
+        endedByLocalUser = false
         val existing = _activeCall.value
         val cachedSims = simDetector.getCachedSimsNonBlocking()
         val matchedSim = cachedSims.firstOrNull { it.phoneAccountHandleId == accountHandleId }
@@ -945,11 +1018,7 @@ class ActiveCallCoordinator(
             it.isNotBlank() && it != remoteHandle && it != "Unknown"
         } ?: displayName
 
-        val availableRoutes = if (existing.availableAudioRoutes.size > 2) {
-            existing.availableAudioRoutes
-        } else {
-            rtpAudioEngine.getAvailableAudioRoutes()
-        }
+        val availableRoutes = existing.availableAudioRoutes
 
         _activeCall.value = existing.copy(
             callId = existing.callId.ifBlank { UUID.randomUUID().toString() },
@@ -968,6 +1037,10 @@ class ActiveCallCoordinator(
             ),
             connectedAtEpochMs = connectedAt
         )
+
+        if (availableRoutes.size <= 2 && lifecycle != CallLifecycleState.ENDED) {
+            refreshAudioRoutesAsync()
+        }
 
         if (nonBlockingSims.isEmpty()) {
             scope.launch(Dispatchers.IO) {
@@ -1032,13 +1105,92 @@ class ActiveCallCoordinator(
         }
     }
 
-    fun onNativeSimCallEnded() {
+    fun onNativeSimCallEnded(disconnectCode: Int? = null) {
         notificationManager.cancelIncomingNotification()
         val existing = _activeCall.value
+        if (existing.lifecycle == CallLifecycleState.AUTO_RECALL_COUNTDOWN) return
         if (existing.isIncoming && existing.connectedAtEpochMs == null) {
             activeCallDirection = CallDirection.MISSED
         }
-        scope.launch { finalizeAndClearCall("Call ended") }
+        val wasConnected = existing.connectedAtEpochMs != null
+        val directionSnapshot = activeCallDirection
+        val localEndSnapshot = endedByLocalUser
+        val attemptSnapshot = currentRecallAttempt
+        scope.launch {
+            val autoRecallOn = prefsRepository.settingsFlow.first().autoRecallEnabled
+            val canRecall = shouldTriggerAutoRecall(
+                enabled = autoRecallOn,
+                direction = directionSnapshot,
+                wasConnected = wasConnected,
+                endedByLocalUser = localEndSnapshot,
+                disconnectCode = disconnectCode,
+                sipStatusCode = null,
+                attempt = attemptSnapshot
+            )
+            val reason = formatSimDisconnectReason(disconnectCode)
+            finalizeAndClearCall(
+                reason = reason,
+                holdStatusMs = if (canRecall) 0L else 200L,
+                allowAutoRecall = canRecall
+            )
+        }
+    }
+
+    fun cancelAutoRecall() {
+        recallJob?.cancel()
+        recallJob = null
+        currentRecallAttempt = 0
+        endedByLocalUser = true
+        _activeCall.value = ActiveCallState()
+        _isCallUiMinimized.value = false
+        _elapsedSeconds.value = 0
+    }
+
+    fun triggerAutoRecallNow() {
+        recallJob?.cancel()
+        recallJob = null
+        val dest = lastOutgoingDestination ?: return
+        val route = lastOutgoingRoute ?: return
+        placeCallInternal(
+            destination = dest,
+            route = route,
+            recallAttempt = currentRecallAttempt + 1,
+            cancelPendingRecall = false
+        )
+    }
+
+    private fun startAutoRecallCountdown(
+        destination: String,
+        route: ResolvedOutgoingRoute,
+        delaySeconds: Int,
+        reason: String,
+        nextAttempt: Int
+    ) {
+        recallJob?.cancel()
+        recallJob = scope.launch {
+            for (remaining in delaySeconds downTo 1) {
+                val cur = _activeCall.value
+                if (cur.lifecycle != CallLifecycleState.AUTO_RECALL_COUNTDOWN) return@launch
+                _activeCall.update {
+                    it.copy(
+                        autoRecallRemainingSec = remaining,
+                        autoRecallTotalSec = delaySeconds,
+                        autoRecallReason = reason,
+                        autoRecallAttempt = nextAttempt,
+                        statusMessage = "$reason • Recalling in ${remaining}s"
+                    )
+                }
+                delay(1000L)
+            }
+            if (_activeCall.value.lifecycle == CallLifecycleState.AUTO_RECALL_COUNTDOWN) {
+                placeCallInternal(
+                    destination = destination,
+                    route = route,
+                    recallAttempt = nextAttempt,
+                    cancelPendingRecall = false
+                )
+            }
+        }
     }
 
     private fun startTimersAndTelemetry() {
@@ -1066,7 +1218,8 @@ class ActiveCallCoordinator(
 
     private suspend fun finalizeAndClearCall(
         reason: String,
-        holdStatusMs: Long = 200L
+        holdStatusMs: Long = 200L,
+        allowAutoRecall: Boolean = false
     ) = finalizeMutex.withLock {
         val finished = _activeCall.value
         if (finished.lifecycle == CallLifecycleState.IDLE && finished.remoteHandle.isBlank()) {
@@ -1116,6 +1269,36 @@ class ActiveCallCoordinator(
             )
         )
 
+        val prefs = prefsRepository.settingsFlow.first()
+        val savedDest = lastOutgoingDestination
+        val savedRoute = lastOutgoingRoute
+        if (allowAutoRecall &&
+            prefs.autoRecallEnabled &&
+            !savedDest.isNullOrBlank() &&
+            savedRoute != null &&
+            currentRecallAttempt < MAX_AUTO_RECALL_ATTEMPTS
+        ) {
+            val delaySec = prefs.autoRecallDelaySeconds.coerceIn(3, 60)
+            val nextAttempt = currentRecallAttempt + 1
+            _activeCall.value = finished.copy(
+                lifecycle = CallLifecycleState.AUTO_RECALL_COUNTDOWN,
+                isRecording = false,
+                isOnHold = false,
+                statusMessage = "$reason • Recalling in ${delaySec}s",
+                autoRecallRemainingSec = delaySec,
+                autoRecallTotalSec = delaySec,
+                autoRecallReason = reason,
+                autoRecallAttempt = nextAttempt
+            )
+            _isCallUiMinimized.value = false
+            _elapsedSeconds.value = 0
+            autoRecordingTriggeredForCallId = null
+            pendingSipFallbackQueue.clear()
+            activeSipFallbackAccount = null
+            startAutoRecallCountdown(savedDest, savedRoute, delaySec, reason, nextAttempt)
+            return@withLock
+        }
+
         _activeCall.value = finished.copy(
             lifecycle = CallLifecycleState.ENDED,
             isRecording = false,
@@ -1128,6 +1311,7 @@ class ActiveCallCoordinator(
         _isCallUiMinimized.value = false
         _elapsedSeconds.value = 0
         autoRecordingTriggeredForCallId = null
+        currentRecallAttempt = 0
         pendingSipFallbackQueue.clear()
         activeSipFallbackAccount = null
     }
@@ -1139,12 +1323,54 @@ class ActiveCallCoordinator(
     )
 
     companion object {
+        const val MAX_AUTO_RECALL_ATTEMPTS = 5
         // Strictly retry alternative BD/E.164 format variants ONLY on number/address format ambiguity (404/484).
         // Never retry when callee is busy (486), declines (603), or does not answer (480/408).
         private val RETRYABLE_PRE_RING_CODES = setOf(404, 484)
+        private val AUTO_RECALL_SIP_CODES = setOf(480, 408, 486, 600, 603)
+        private val AUTO_RECALL_SIM_CODES = setOf(
+            DisconnectCause.BUSY,
+            DisconnectCause.REJECTED,
+            DisconnectCause.MISSED,
+            DisconnectCause.REMOTE,
+            DisconnectCause.OTHER
+        )
         private val voipConnections = ConcurrentHashMap<String, WeakReference<VoipConnectionService.OmniVoipConnection>>()
         private var nativeInCallServiceRef: WeakReference<OmniCallInCallService>? = null
         private var nativeInCallRef: WeakReference<Call>? = null
+
+        fun shouldTriggerAutoRecall(
+            enabled: Boolean,
+            direction: CallDirection,
+            wasConnected: Boolean,
+            endedByLocalUser: Boolean,
+            disconnectCode: Int?,
+            sipStatusCode: Int?,
+            attempt: Int
+        ): Boolean {
+            if (!enabled) return false
+            if (direction != CallDirection.OUTGOING) return false
+            if (wasConnected || endedByLocalUser) return false
+            if (attempt >= MAX_AUTO_RECALL_ATTEMPTS) return false
+            if (sipStatusCode != null) {
+                return sipStatusCode in AUTO_RECALL_SIP_CODES
+            }
+            if (disconnectCode == DisconnectCause.LOCAL ||
+                disconnectCode == DisconnectCause.CANCELED ||
+                disconnectCode == DisconnectCause.ERROR ||
+                disconnectCode == DisconnectCause.RESTRICTED
+            ) {
+                return false
+            }
+            return disconnectCode == null || disconnectCode in AUTO_RECALL_SIM_CODES
+        }
+
+        fun formatSimDisconnectReason(disconnectCode: Int?): String = when (disconnectCode) {
+            DisconnectCause.BUSY -> "User busy"
+            DisconnectCause.REJECTED -> "Call declined"
+            DisconnectCause.MISSED -> "No answer"
+            else -> "No answer"
+        }
 
         fun classifySipFailure(
             statusCode: Int,

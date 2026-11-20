@@ -18,6 +18,7 @@ import com.example.sip.AutoConfigProgress
 import com.example.sip.SipNetworkHealthResult
 import com.example.ui.theme.AppColorPalette
 import com.example.ui.theme.ThemePreference
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -63,11 +64,10 @@ data class SipSettingsUiState(
 
 class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
 
-    private val initialSims = container.simSubscriptionDetector.detectActiveSims()
-    private val initialIsDefault = container.telecomCallManager.isDefaultDialer()
+    private val initialSims = container.simSubscriptionDetector.getCachedSimsNonBlocking()
 
     private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(initialSims)
-    private val _isDefaultDialer = MutableStateFlow(initialIsDefault)
+    private val _isDefaultDialer = MutableStateFlow(false)
     private val _showSheet = MutableStateFlow(false)
     private val _form = MutableStateFlow(SipFormState())
     private val _managedAccountId = MutableStateFlow<Long?>(null)
@@ -123,17 +123,23 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = SipSettingsUiState(
             simSlots = initialSims,
-            isDefaultDialer = initialIsDefault,
+            isDefaultDialer = false,
             environment = AvailableCallingEnvironment(
                 simSlots = initialSims,
-                isDefaultDialer = initialIsDefault
+                isDefaultDialer = false
             )
         )
     )
 
+    init {
+        refreshEnvironment()
+    }
+
     fun refreshEnvironment() {
-        _simSlots.value = container.simSubscriptionDetector.detectActiveSims()
-        _isDefaultDialer.value = container.telecomCallManager.isDefaultDialer()
+        viewModelScope.launch(Dispatchers.IO) {
+            _simSlots.value = container.simSubscriptionDetector.detectActiveSims()
+            _isDefaultDialer.value = container.telecomCallManager.isDefaultDialer()
+        }
     }
 
     fun openAddAccountSheet() {
@@ -386,6 +392,18 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun setAutoCallRecording(enabled: Boolean) {
         viewModelScope.launch {
             container.preferencesRepository.setAutoCallRecording(enabled)
+        }
+    }
+
+    fun setAutoRecallEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            container.preferencesRepository.setAutoRecallEnabled(enabled)
+        }
+    }
+
+    fun setAutoRecallDelaySeconds(seconds: Int) {
+        viewModelScope.launch {
+            container.preferencesRepository.setAutoRecallDelaySeconds(seconds)
         }
     }
 

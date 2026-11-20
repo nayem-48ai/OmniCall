@@ -74,6 +74,11 @@ class IncomingCallActivity : ComponentActivity() {
                         coordinator.endActiveCall()
                         finish()
                     },
+                    onCancelAutoRecall = {
+                        coordinator.cancelAutoRecall()
+                        finish()
+                    },
+                    onRecallNow = coordinator::triggerAutoRecallNow,
                     onMinimize = {
                         coordinator.minimizeCallUi()
                         finish()

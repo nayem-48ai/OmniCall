@@ -274,6 +274,10 @@ class BlocklistRepository(
     private val context: Context,
     private val dao: BlocklistDao
 ) {
+    private val fastPrefs by lazy {
+        context.getSharedPreferences("omnicall_fast_blocklist", Context.MODE_PRIVATE)
+    }
+
     @Volatile
     private var cachedKeys: Set<String> = emptySet()
 
@@ -281,22 +285,48 @@ class BlocklistRepository(
     private var cacheWarmed: Boolean = false
 
     val blockedFlow: Flow<List<BlockedNumberItem>> = dao.observeAll().map { list ->
-        cachedKeys = list.map { it.normalizedKey }.toSet()
+        val keys = list.map { it.normalizedKey }.toSet()
+        cachedKeys = keys
         cacheWarmed = true
+        persistFastKeys(keys)
         list.map { it.toDomain() }
     }
 
     fun isCacheWarmed(): Boolean = cacheWarmed
 
+    fun hasFastCacheReady(): Boolean {
+        if (cacheWarmed) return true
+        val stored = fastPrefs.getStringSet("blocked_keys", null)
+        return if (stored != null) {
+            cachedKeys = stored.toSet()
+            cacheWarmed = true
+            true
+        } else {
+            false
+        }
+    }
+
+    private fun persistFastKeys(keys: Set<String>) {
+        runCatching {
+            fastPrefs.edit().putStringSet("blocked_keys", HashSet(keys)).apply()
+        }
+    }
+
     suspend fun warmupCache() {
         val all = runCatching { dao.getAll() }.getOrDefault(emptyList())
-        cachedKeys = all.map { it.normalizedKey }.toSet()
+        val keys = all.map { it.normalizedKey }.toSet()
+        cachedKeys = keys
         cacheWarmed = true
+        persistFastKeys(keys)
     }
 
     fun isBlockedFast(handle: String): Boolean {
         val key = normalizeKey(handle)
-        return key.isNotEmpty() && key in cachedKeys
+        if (key.isEmpty()) return false
+        if (!cacheWarmed) {
+            hasFastCacheReady()
+        }
+        return key in cachedKeys
     }
 
     suspend fun getAllBlocked(): List<BlockedNumberItem> = dao.getAll().map { it.toDomain() }
@@ -305,8 +335,10 @@ class BlocklistRepository(
         val key = normalizeKey(handle)
         if (key.isEmpty()) return false
         val all = dao.getAll()
-        cachedKeys = all.map { it.normalizedKey }.toSet()
+        val keys = all.map { it.normalizedKey }.toSet()
+        cachedKeys = keys
         cacheWarmed = true
+        persistFastKeys(keys)
         val localHit = all.any { it.normalizedKey == key }
         if (localHit) return true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -332,6 +364,10 @@ class BlocklistRepository(
                 createdAtMs = System.currentTimeMillis()
             )
         )
+        val next = cachedKeys + key
+        cachedKeys = next
+        cacheWarmed = true
+        persistFastKeys(next)
         syncSystemBlock(cleanRaw, block = true)
     }
 
@@ -339,18 +375,27 @@ class BlocklistRepository(
         val key = normalizeKey(handle)
         if (key.isNotEmpty()) {
             dao.deleteByNormalizedKey(key)
+            val next = cachedKeys - key
+            cachedKeys = next
+            persistFastKeys(next)
         }
         syncSystemBlock(handle.trim(), block = false)
     }
 
     suspend fun unblockItem(item: BlockedNumberItem) {
         dao.deleteById(item.id)
+        val next = cachedKeys - item.normalizedKey
+        cachedKeys = next
+        persistFastKeys(next)
         syncSystemBlock(item.rawNumber, block = false)
     }
 
     suspend fun unblockItems(items: List<BlockedNumberItem>) {
         if (items.isEmpty()) return
         dao.deleteByIds(items.map { it.id })
+        val next = cachedKeys - items.map { it.normalizedKey }.toSet()
+        cachedKeys = next
+        persistFastKeys(next)
         items.forEach { syncSystemBlock(it.rawNumber, block = false) }
     }
 

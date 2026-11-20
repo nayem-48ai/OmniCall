@@ -202,6 +202,7 @@ enum class CallLifecycleState {
     RINGING_OUTGOING,
     ACTIVE,
     ON_HOLD,
+    AUTO_RECALL_COUNTDOWN,
     ENDED
 }
 
@@ -233,5 +234,9 @@ data class ActiveCallState(
     val recordingDurationSec: Int = 0,
     val connectedAtEpochMs: Long? = null,
     val telemetry: AudioQualityTelemetry = AudioQualityTelemetry(),
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    val autoRecallRemainingSec: Int = 0,
+    val autoRecallTotalSec: Int = 0,
+    val autoRecallReason: String = "",
+    val autoRecallAttempt: Int = 0
 )

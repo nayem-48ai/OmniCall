@@ -18,6 +18,7 @@ import com.example.domain.model.OutgoingRoutingMode
 import com.example.domain.model.ResolvedOutgoingRoute
 import com.example.domain.model.SimSlotInfo
 import com.example.domain.model.SipAccountModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -54,20 +55,18 @@ class DialerViewModel(
     private val container: AppContainer
 ) : AndroidViewModel(application) {
 
-    private val initialSims = container.simSubscriptionDetector.detectActiveSims()
-    private val initialIsDefault = container.telecomCallManager.isDefaultDialer()
+    private val initialSims = container.simSubscriptionDetector.getCachedSimsNonBlocking()
 
     private val _inputNumber = MutableStateFlow("")
     private val _simSlots = MutableStateFlow<List<SimSlotInfo>>(initialSims)
-    private val _isDefaultDialer = MutableStateFlow(initialIsDefault)
+    private val _isDefaultDialer = MutableStateFlow(false)
     private val _contacts = MutableStateFlow<List<ContactItem>>(emptyList())
     private val _showRoutePickerSheet = MutableStateFlow(false)
     private val _pendingDestination = MutableStateFlow<String?>(null)
     private val _bannerMessage = MutableStateFlow<String?>(null)
 
-    private var toneGenerator: ToneGenerator? = runCatching {
-        ToneGenerator(AudioManager.STREAM_DTMF, 65)
-    }.getOrNull()
+    @Volatile
+    private var toneGenerator: ToneGenerator? = null
 
     val uiState: StateFlow<DialerUiState> = combine(
         _inputNumber,
@@ -120,15 +119,16 @@ class DialerViewModel(
         initialValue = DialerUiState(
             environment = AvailableCallingEnvironment(
                 simSlots = initialSims,
-                isDefaultDialer = initialIsDefault
+                isDefaultDialer = false
             )
         )
     )
 
     init {
-        viewModelScope.launch {
-            _contacts.value = container.contactsRepository.loadContacts()
+        viewModelScope.launch(Dispatchers.IO) {
+            toneGenerator = runCatching { ToneGenerator(AudioManager.STREAM_DTMF, 65) }.getOrNull()
         }
+        refreshHardwareEnvironment()
         viewModelScope.launch {
             container.activeCallCoordinator.callErrorEvents.collect { errorMsg ->
                 _bannerMessage.value = errorMsg
@@ -136,11 +136,13 @@ class DialerViewModel(
         }
     }
 
-    fun refreshHardwareEnvironment() {
-        _simSlots.value = container.simSubscriptionDetector.detectActiveSims()
-        _isDefaultDialer.value = container.telecomCallManager.isDefaultDialer()
-        viewModelScope.launch {
-            _contacts.value = container.contactsRepository.loadContacts()
+    fun refreshHardwareEnvironment(forceContactsRefresh: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val sims = container.simSubscriptionDetector.detectActiveSims()
+            val isDefault = container.telecomCallManager.isDefaultDialer()
+            _simSlots.value = sims
+            _isDefaultDialer.value = isDefault
+            _contacts.value = container.contactsRepository.loadContacts(forceRefresh = forceContactsRefresh)
         }
     }
 

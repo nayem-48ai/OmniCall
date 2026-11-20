@@ -7,6 +7,8 @@ import android.net.Uri
 import android.provider.ContactsContract
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class ContactPhoneNumber(
@@ -40,6 +42,16 @@ data class ContactLookupResult(
  */
 class ContactsRepository(private val context: Context) {
 
+    private val loadMutex = Mutex()
+    @Volatile
+    private var cachedContacts: List<ContactItem>? = null
+
+    fun getCachedContactsNonBlocking(): List<ContactItem>? = cachedContacts
+
+    fun invalidateCache() {
+        cachedContacts = null
+    }
+
     fun hasContactsPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
             context,
@@ -54,10 +66,19 @@ class ContactsRepository(private val context: Context) {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    suspend fun loadContacts(): List<ContactItem> = withContext(Dispatchers.IO) {
-        if (!hasContactsPermission()) return@withContext emptyList()
-
-        val contactMap = linkedMapOf<Long, MutableContactBuilder>()
+    suspend fun loadContacts(forceRefresh: Boolean = false): List<ContactItem> = withContext(Dispatchers.IO) {
+        if (!hasContactsPermission()) {
+            cachedContacts = null
+            return@withContext emptyList()
+        }
+        if (!forceRefresh) {
+            cachedContacts?.let { return@withContext it }
+        }
+        loadMutex.withLock {
+            if (!forceRefresh) {
+                cachedContacts?.let { return@withLock it }
+            }
+            val contactMap = linkedMapOf<Long, MutableContactBuilder>()
         val projection = arrayOf(
             ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
             ContactsContract.CommonDataKinds.Phone.LOOKUP_KEY,
@@ -131,17 +152,20 @@ class ContactsRepository(private val context: Context) {
             }
         }
 
-        contactMap.values.map { builder ->
-            // Place default (IS_SUPER_PRIMARY / IS_PRIMARY) phone number first
-            val sortedNumbers = builder.numbers.sortedByDescending { it.isDefault }
-            ContactItem(
-                id = builder.id,
-                lookupKey = builder.lookupKey,
-                displayName = builder.displayName,
-                isFavorite = builder.isFavorite,
-                phoneNumbers = sortedNumbers,
-                photoUri = builder.photoUri
-            )
+            val loaded = contactMap.values.map { builder ->
+                // Place default (IS_SUPER_PRIMARY / IS_PRIMARY) phone number first
+                val sortedNumbers = builder.numbers.sortedByDescending { it.isDefault }
+                ContactItem(
+                    id = builder.id,
+                    lookupKey = builder.lookupKey,
+                    displayName = builder.displayName,
+                    isFavorite = builder.isFavorite,
+                    phoneNumbers = sortedNumbers,
+                    photoUri = builder.photoUri
+                )
+            }
+            cachedContacts = loaded
+            loaded
         }
     }
 
@@ -387,6 +411,9 @@ class ContactsRepository(private val context: Context) {
                 true
             }.getOrDefault(false)
             if (ok) importedCount++
+        }
+        if (importedCount > 0) {
+            cachedContacts = null
         }
         importedCount
     }

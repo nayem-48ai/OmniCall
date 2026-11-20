@@ -33,12 +33,15 @@ class CallNotificationManager(private val context: Context) {
         const val CHANNEL_INCOMING = "omnicall_incoming_calls_v2"
         const val CHANNEL_INCOMING_CELLULAR = "omnicall_incoming_cellular_v1"
         const val CHANNEL_ONGOING = "omnicall_ongoing_calls"
+        const val CHANNEL_SIP_STATUS = "omnicall_sip_background_status"
         const val NOTIF_ID_INCOMING = 4101
         const val NOTIF_ID_ONGOING = 4102
+        const val NOTIF_ID_SIP_STATUS = 4103
 
         const val ACTION_ANSWER_CALL = "com.example.omnicall.ACTION_ANSWER_CALL"
         const val ACTION_DECLINE_CALL = "com.example.omnicall.ACTION_DECLINE_CALL"
         const val ACTION_HANGUP_CALL = "com.example.omnicall.ACTION_HANGUP_CALL"
+        const val ACTION_RECONNECT_SIP = "com.example.omnicall.ACTION_RECONNECT_SIP"
 
         fun extractShortLineLabel(rawLineBadge: String): String {
             val trimmed = rawLineBadge.trim()
@@ -120,9 +123,21 @@ class CallNotificationManager(private val context: Context) {
                 setShowBadge(false)
             }
 
+            val sipStatusChannel = NotificationChannel(
+                CHANNEL_SIP_STATUS,
+                "SIP Background Connection",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps SIP VoIP registration active in background for incoming calls"
+                setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
+            }
+
             notificationManager.createNotificationChannel(incomingChannel)
             notificationManager.createNotificationChannel(cellularChannel)
             notificationManager.createNotificationChannel(ongoingChannel)
+            notificationManager.createNotificationChannel(sipStatusChannel)
         }
     }
 
@@ -277,6 +292,39 @@ class CallNotificationManager(private val context: Context) {
             .setColor(0xFF1A73E8.toInt())
             .setContentIntent(openPi)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, context.getString(R.string.in_call_end), hangupPi)
+            .build()
+    }
+
+    fun buildSipBackgroundNotification(
+        title: String,
+        subtitle: String
+    ): Notification {
+        ensureChannels()
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openPi = PendingIntent.getActivity(
+            context,
+            105,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val reconnectPi = PendingIntent.getService(
+            context,
+            106,
+            Intent(context, SipBackgroundService::class.java).setAction(ACTION_RECONNECT_SIP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(context, CHANNEL_SIP_STATUS)
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle(title)
+            .setContentText(subtitle)
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setContentIntent(openPi)
+            .addAction(android.R.drawable.ic_menu_rotate, "Refresh", reconnectPi)
             .build()
     }
 
