@@ -44,7 +44,6 @@ import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.PermDeviceInformation
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.SimCard
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -97,8 +96,6 @@ import com.example.ui.theme.ThemePreference
 import com.example.ui.viewmodel.SipFormState
 import com.example.ui.viewmodel.SipSettingsUiState
 import com.example.ui.viewmodel.SipSettingsViewModel
-
-private val AUTO_RECALL_PRESETS = listOf(3, 5, 10, 15, 30)
 
 @Composable
 fun SipSettingsScreen(
@@ -382,63 +379,7 @@ fun SipSettingsScreen(
                 }
             }
 
-            // 0. Auto Recall Section (first Calling/Telephony control)
-            item {
-                SettingsSectionCard(
-                    title = "Auto Recall",
-                    trailingAction = {
-                        Switch(
-                            checked = uiState.settings.autoRecallEnabled,
-                            onCheckedChange = { viewModel.setAutoRecallEnabled(it) },
-                            modifier = Modifier.testTag("toggle_auto_recall")
-                        )
-                    }
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Replay,
-                            contentDescription = null,
-                            tint = if (uiState.settings.autoRecallEnabled) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                        Text(
-                            text = "Automatically redial unanswered, declined, or busy outgoing calls after a short countdown.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Countdown timer: ${uiState.settings.autoRecallDelaySeconds}s",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(AUTO_RECALL_PRESETS, key = { it }) { sec ->
-                            FilterChip(
-                                selected = uiState.settings.autoRecallDelaySeconds == sec,
-                                onClick = { viewModel.setAutoRecallDelaySeconds(sec) },
-                                label = { Text("${sec}s") },
-                                modifier = Modifier.testTag("auto_recall_delay_$sec")
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 1. Hardware SIM Detection & Default Dialer Card (clickable -> opens TelephonySettingsScreen with Make Calls With)
+            // 1. Hardware SIM Detection & Default Dialer Card (clickable -> opens TelephonySettingsScreen with Auto Recall & Make Calls With)
             item {
                 SettingsSectionCard(
                     title = "Telephony & SIM Slots",
@@ -558,7 +499,7 @@ fun SipSettingsScreen(
 
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Tap to open Make Calls With (${availableModes.size} mode${if (availableModes.size == 1) "" else "s"} detected)",
+                        text = "Tap to open Auto Recall & Make Calls With (${availableModes.size} mode${if (availableModes.size == 1) "" else "s"} detected)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -603,6 +544,53 @@ fun SipSettingsScreen(
                                 )
                             }
 
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.WifiCalling3,
+                                        contentDescription = null,
+                                        tint = if (uiState.settings.receiveIncomingSipCalls) {
+                                            SignalConnected
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Receive Incoming SIP/VoIP Calls",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = if (uiState.settings.receiveIncomingSipCalls) {
+                                                "Active in background • Turn off here or via notification Stop"
+                                            } else {
+                                                "Background listening paused • Outgoing SIP calls still work"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = uiState.settings.receiveIncomingSipCalls,
+                                        onCheckedChange = { viewModel.setReceiveIncomingSipCalls(it) },
+                                        modifier = Modifier.testTag("toggle_receive_incoming_sip_calls")
+                                    )
+                                }
+                            }
+
                             SipNetworkHealthBanner(
                                 targetAccount = primarySip,
                                 health = uiState.networkHealth,
@@ -611,22 +599,17 @@ fun SipSettingsScreen(
                             )
 
                             BackgroundSipKeepAliveBanner(
+                                isBatteryUnrestricted = uiState.isBatteryOptimizationIgnored,
                                 onOpenBatterySettings = {
-                                    val batteryIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                                    } else {
-                                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                            data = Uri.fromParts("package", context.packageName, null)
-                                        }
+                                    val appInfoIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.fromParts("package", context.packageName, null)
                                     }
-                                    runCatching { context.startActivity(batteryIntent) }
+                                    runCatching { context.startActivity(appInfoIntent) }
                                         .onFailure {
-                                            runCatching {
-                                                context.startActivity(
-                                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                                        data = Uri.fromParts("package", context.packageName, null)
-                                                    }
-                                                )
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                                runCatching {
+                                                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                                }
                                             }
                                         }
                                 }
@@ -844,11 +827,16 @@ private fun SipNetworkHealthBanner(
 
 @Composable
 private fun BackgroundSipKeepAliveBanner(
+    isBatteryUnrestricted: Boolean,
     onOpenBatterySettings: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = if (isBatteryUnrestricted) {
+            SignalConnected.copy(alpha = 0.12f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -859,20 +847,28 @@ private fun BackgroundSipKeepAliveBanner(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Icon(
-                imageVector = Icons.Rounded.BatterySaver,
+                imageVector = if (isBatteryUnrestricted) Icons.Rounded.CheckCircle else Icons.Rounded.BatterySaver,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = if (isBatteryUnrestricted) SignalConnected else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(22.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Background Incoming SIP",
+                    text = if (isBatteryUnrestricted) {
+                        "Background Battery • Unrestricted"
+                    } else {
+                        "Background Incoming SIP"
+                    },
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = if (isBatteryUnrestricted) SignalConnected else MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Allow unrestricted battery usage so incoming SIP calls arrive even when minimized",
+                    text = if (isBatteryUnrestricted) {
+                        "Battery optimization is disabled so incoming SIP calls arrive reliably"
+                    } else {
+                        "Tap Allow → Battery usage → Enable 'Allow background activity' or 'Unrestricted'"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -881,7 +877,11 @@ private fun BackgroundSipKeepAliveBanner(
                 onClick = onOpenBatterySettings,
                 modifier = Modifier.testTag("sip_battery_settings_button")
             ) {
-                Text("Allow", maxLines = 1, softWrap = false)
+                Text(
+                    text = if (isBatteryUnrestricted) "Manage" else "Allow",
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
     }

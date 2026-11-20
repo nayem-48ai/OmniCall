@@ -603,10 +603,21 @@ class SipAndRoutingUnitTest {
 
     @Test
     fun autoRecallDecision_triggersOnlyOnEligibleUnansweredOrRejectedOutgoingCalls() {
-        // Default settings: Auto Recall disabled by default with 5s timer
+        // Default settings: Auto Recall disabled by default with 5s timer, Background SIP enabled by default
         val defaultSettings = AppSettingsState()
         assertFalse(defaultSettings.autoRecallEnabled)
         assertEquals(5, defaultSettings.autoRecallDelaySeconds)
+        assertTrue(defaultSettings.receiveIncomingSipCalls)
+
+        // Preset formatting: 5s, 15s, 30s, 1m, 5m
+        assertEquals(listOf(5, 15, 30, 60, 300), ActiveCallCoordinator.AUTO_RECALL_PRESET_SECONDS)
+        assertEquals(
+            listOf("5s", "15s", "30s", "1m", "5m"),
+            ActiveCallCoordinator.AUTO_RECALL_PRESET_SECONDS.map { ActiveCallCoordinator.formatAutoRecallPreset(it) }
+        )
+        assertEquals("5:00", ActiveCallCoordinator.formatAutoRecallRemaining(300))
+        assertEquals("1:05", ActiveCallCoordinator.formatAutoRecallRemaining(65))
+        assertEquals("30s", ActiveCallCoordinator.formatAutoRecallRemaining(30))
 
         // Disabled -> never triggers
         assertFalse(

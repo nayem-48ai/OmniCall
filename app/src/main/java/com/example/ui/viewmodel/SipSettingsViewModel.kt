@@ -1,5 +1,8 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
+import android.os.Build
+import android.os.PowerManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.AppContainer
@@ -59,7 +62,8 @@ data class SipSettingsUiState(
     val managedAccount: SipAccountModel? = null,
     val isCheckingBalance: Boolean = false,
     val networkHealth: SipNetworkHealthResult? = null,
-    val isCheckingNetwork: Boolean = false
+    val isCheckingNetwork: Boolean = false,
+    val isBatteryOptimizationIgnored: Boolean = false
 )
 
 class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
@@ -74,6 +78,7 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     private val _isCheckingBalance = MutableStateFlow(false)
     private val _networkHealth = MutableStateFlow<SipNetworkHealthResult?>(null)
     private val _isCheckingNetwork = MutableStateFlow(false)
+    private val _isBatteryOptimizationIgnored = MutableStateFlow(false)
 
     private var discoveryJob: Job? = null
 
@@ -118,6 +123,8 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         state.copy(networkHealth = health)
     }.combine(_isCheckingNetwork) { state, checkingNet ->
         state.copy(isCheckingNetwork = checkingNet)
+    }.combine(_isBatteryOptimizationIgnored) { state, ignored ->
+        state.copy(isBatteryOptimizationIgnored = ignored)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -139,6 +146,12 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _simSlots.value = container.simSubscriptionDetector.detectActiveSims()
             _isDefaultDialer.value = container.telecomCallManager.isDefaultDialer()
+            val pm = container.appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            _isBatteryOptimizationIgnored.value = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && pm != null) {
+                runCatching { pm.isIgnoringBatteryOptimizations(container.appContext.packageName) }.getOrDefault(false)
+            } else {
+                true
+            }
         }
     }
 
@@ -233,6 +246,11 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
                             )
                             val savedId = container.sipAccountRepository.saveAccountWithPassword(model, pwd)
                             val savedModel = model.copy(id = savedId)
+                            container.preferencesRepository.setReceiveIncomingSipCalls(true)
+                            container.sipClientEngine.setBackgroundIncomingEnabled(
+                                enabled = true,
+                                restartIfEnabled = false
+                            )
                             container.sipClientEngine.startAccountRegistration(savedModel)
 
                             _form.update {
@@ -288,6 +306,11 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
                 lastError = "Saved without live probe"
             )
             val id = container.sipAccountRepository.saveAccountWithPassword(model, pwd)
+            container.preferencesRepository.setReceiveIncomingSipCalls(true)
+            container.sipClientEngine.setBackgroundIncomingEnabled(
+                enabled = true,
+                restartIfEnabled = false
+            )
             container.sipClientEngine.startAccountRegistration(model.copy(id = id))
             _showSheet.value = false
         }
@@ -323,6 +346,12 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun deleteAccount(accountId: Long) {
         viewModelScope.launch {
             container.sipAccountRepository.deleteAccount(accountId)
+            val remaining = container.sipAccountRepository.getDefaultActiveAccount()
+            if (remaining == null) {
+                container.sipClientEngine.stopTransport()
+            } else if (uiState.value.settings.receiveIncomingSipCalls) {
+                container.sipClientEngine.startAccountRegistration(remaining)
+            }
         }
     }
 
@@ -404,6 +433,16 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun setAutoRecallDelaySeconds(seconds: Int) {
         viewModelScope.launch {
             container.preferencesRepository.setAutoRecallDelaySeconds(seconds)
+        }
+    }
+
+    fun setReceiveIncomingSipCalls(enabled: Boolean) {
+        viewModelScope.launch {
+            container.preferencesRepository.setReceiveIncomingSipCalls(enabled)
+            container.sipClientEngine.setBackgroundIncomingEnabled(
+                enabled = enabled,
+                restartIfEnabled = true
+            )
         }
     }
 

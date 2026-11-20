@@ -29,6 +29,7 @@ data class AppSettingsState(
     val autoCallRecording: Boolean = false,
     val autoRecallEnabled: Boolean = false,
     val autoRecallDelaySeconds: Int = 5,
+    val receiveIncomingSipCalls: Boolean = true,
     val preferWidebandCodecs: Boolean = true,
     val enableHardwareAec: Boolean = true,
     val enableHardwareNs: Boolean = true,
@@ -48,6 +49,7 @@ class AppPreferencesRepository(private val context: Context) {
         val AUTO_CALL_RECORDING = booleanPreferencesKey("auto_call_recording")
         val AUTO_RECALL_ENABLED = booleanPreferencesKey("auto_recall_enabled")
         val AUTO_RECALL_DELAY_SECONDS = intPreferencesKey("auto_recall_delay_seconds")
+        val RECEIVE_INCOMING_SIP_CALLS = booleanPreferencesKey("receive_incoming_sip_calls")
         val WIDEBAND_CODECS = booleanPreferencesKey("prefer_wideband_codecs")
         val HARDWARE_AEC = booleanPreferencesKey("enable_hardware_aec")
         val HARDWARE_NS = booleanPreferencesKey("enable_hardware_ns")
@@ -73,7 +75,8 @@ class AppPreferencesRepository(private val context: Context) {
             } ?: RecordingEngine.AUTO,
             autoCallRecording = prefs[Keys.AUTO_CALL_RECORDING] ?: false,
             autoRecallEnabled = prefs[Keys.AUTO_RECALL_ENABLED] ?: false,
-            autoRecallDelaySeconds = (prefs[Keys.AUTO_RECALL_DELAY_SECONDS] ?: 5).coerceIn(3, 60),
+            autoRecallDelaySeconds = (prefs[Keys.AUTO_RECALL_DELAY_SECONDS] ?: 5).coerceIn(3, 300),
+            receiveIncomingSipCalls = prefs[Keys.RECEIVE_INCOMING_SIP_CALLS] ?: true,
             preferWidebandCodecs = prefs[Keys.WIDEBAND_CODECS] ?: true,
             enableHardwareAec = prefs[Keys.HARDWARE_AEC] ?: true,
             enableHardwareNs = prefs[Keys.HARDWARE_NS] ?: true,
@@ -113,7 +116,11 @@ class AppPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setAutoRecallDelaySeconds(seconds: Int) {
-        context.appPrefsDataStore.edit { it[Keys.AUTO_RECALL_DELAY_SECONDS] = seconds.coerceIn(3, 60) }
+        context.appPrefsDataStore.edit { it[Keys.AUTO_RECALL_DELAY_SECONDS] = seconds.coerceIn(3, 300) }
+    }
+
+    suspend fun setReceiveIncomingSipCalls(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.RECEIVE_INCOMING_SIP_CALLS] = enabled }
     }
 
     suspend fun setAudioProcessing(

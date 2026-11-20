@@ -26,12 +26,14 @@ import com.example.telecom.TelecomCallManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
  * Clean Constructor-Injected App Container keeping OmniCall modular and testable without heavy DI boilerplate.
  */
 class AppContainer(application: Application) {
+    val appContext: android.content.Context = application
     val database: OmniCallDatabase by lazy { OmniCallDatabase.getInstance(application) }
     val credentialVault: KeystoreCredentialVault by lazy { KeystoreCredentialVault(application) }
     val preferencesRepository: AppPreferencesRepository by lazy { AppPreferencesRepository(application) }
@@ -109,9 +111,19 @@ class OmniCallApplication : Application() {
             runCatching { container.simSubscriptionDetector.detectActiveSims() }
             runCatching { container.telecomCallManager.registerSelfManagedSipAccount() }
 
+            val prefs = runCatching {
+                container.preferencesRepository.settingsFlow.first()
+            }.getOrNull() ?: com.example.data.preferences.AppSettingsState()
+            container.sipClientEngine.setBackgroundIncomingEnabled(
+                enabled = prefs.receiveIncomingSipCalls,
+                restartIfEnabled = false
+            )
+
             val defaultSip = runCatching { container.sipAccountRepository.getDefaultActiveAccount() }.getOrNull()
             if (defaultSip != null) {
-                container.sipClientEngine.startAccountRegistration(defaultSip)
+                if (prefs.receiveIncomingSipCalls) {
+                    container.sipClientEngine.startAccountRegistration(defaultSip)
+                }
                 if (defaultSip.balancePreset != SipBalancePreset.NONE && defaultSip.showBalanceInKeypad) {
                     container.sipBalanceFetcher.fetchBalance(defaultSip)
                 }

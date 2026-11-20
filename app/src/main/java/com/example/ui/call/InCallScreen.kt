@@ -309,7 +309,8 @@ fun InCallScreen(
                                 CallLifecycleState.RINGING_OUTGOING -> "Ringing..."
                                 CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
                                 CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
-                                CallLifecycleState.AUTO_RECALL_COUNTDOWN -> "Recalling in ${callState.autoRecallRemainingSec}s"
+                                CallLifecycleState.AUTO_RECALL_COUNTDOWN ->
+                                    "Recalling in ${com.example.telecom.ActiveCallCoordinator.formatAutoRecallRemaining(callState.autoRecallRemainingSec)}"
                                 else -> ""
                             },
                             style = MonoTelemetryStyle,
@@ -427,7 +428,7 @@ fun InCallScreen(
                             CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
                             CallLifecycleState.ACTIVE -> formatElapsed(elapsedSeconds)
                             CallLifecycleState.AUTO_RECALL_COUNTDOWN ->
-                                "${callState.autoRecallReason.ifBlank { "No answer" }} • Recalling in ${callState.autoRecallRemainingSec}s"
+                                "${callState.autoRecallReason.ifBlank { "No answer" }} • Recalling in ${com.example.telecom.ActiveCallCoordinator.formatAutoRecallRemaining(callState.autoRecallRemainingSec)}"
                             CallLifecycleState.ENDED -> "Call Ended"
                             CallLifecycleState.IDLE -> ""
                         },
@@ -1185,7 +1186,7 @@ private fun AutoRecallCountdownDock(
                     color = SignalConnected
                 )
                 Text(
-                    text = "${remainingSec}s",
+                    text = com.example.telecom.ActiveCallCoordinator.formatAutoRecallRemaining(remainingSec),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
@@ -1194,7 +1195,7 @@ private fun AutoRecallCountdownDock(
             }
 
             Text(
-                text = "${reason.ifBlank { "No answer" }} • Calling again in ${remainingSec}s",
+                text = "${reason.ifBlank { "No answer" }} • Calling again in ${com.example.telecom.ActiveCallCoordinator.formatAutoRecallRemaining(remainingSec)}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.White.copy(alpha = 0.85f),
                 textAlign = TextAlign.Center
@@ -1293,7 +1294,7 @@ fun CallMiniWindowCard(
         CallLifecycleState.ON_HOLD -> "On Hold • ${formatElapsed(elapsedSeconds)}"
         CallLifecycleState.ACTIVE -> "${formatElapsed(elapsedSeconds)} • $conciseBadge"
         CallLifecycleState.AUTO_RECALL_COUNTDOWN ->
-            "${callState.autoRecallReason.ifBlank { "Auto Recall" }} • ${callState.autoRecallRemainingSec}s"
+            "${callState.autoRecallReason.ifBlank { "Auto Recall" }} • ${com.example.telecom.ActiveCallCoordinator.formatAutoRecallRemaining(callState.autoRecallRemainingSec)}"
         else -> conciseBadge
     }
 

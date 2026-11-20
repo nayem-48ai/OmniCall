@@ -10,6 +10,12 @@ import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.example.OmniCallApplication
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+
 /**
  * Persistent background Foreground Service keeping OmniCall's SIP registration, NAT keep-alive,
  * and UDP/TCP/TLS incoming INVITE socket active when the app is minimized or the screen is off,
@@ -17,6 +23,7 @@ import com.example.OmniCallApplication
  */
 class SipBackgroundService : Service() {
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -32,14 +39,48 @@ class SipBackgroundService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            CallNotificationManager.ACTION_STOP_SIP_BACKGROUND -> {
+                serviceScope.launch {
+                    runCatching {
+                        app.container.preferencesRepository.setReceiveIncomingSipCalls(false)
+                    }
+                }
+                app.container.sipClientEngine.setBackgroundIncomingEnabled(
+                    enabled = false,
+                    restartIfEnabled = false
+                )
+                releaseWifiLock()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
             CallNotificationManager.ACTION_RECONNECT_SIP -> {
                 val sipEngine = app.container.sipClientEngine
+                sipEngine.setBackgroundIncomingEnabled(enabled = true, restartIfEnabled = false)
                 sipEngine.reconnectActiveAccountIfNeeded()
+            }
+            null -> {
+                // System restarted START_STICKY service: verify preference & restore SIP socket cleanly
+                serviceScope.launch {
+                    val enabled = runCatching {
+                        app.container.preferencesRepository.settingsFlow.first().receiveIncomingSipCalls
+                    }.getOrDefault(true)
+                    val defaultSip = runCatching {
+                        app.container.sipAccountRepository.getDefaultActiveAccount()
+                    }.getOrNull()
+                    if (!enabled || defaultSip == null) {
+                        app.container.sipClientEngine.setBackgroundIncomingEnabled(false, restartIfEnabled = false)
+                        stop(applicationContext)
+                    } else {
+                        app.container.sipClientEngine.setBackgroundIncomingEnabled(true, restartIfEnabled = false)
+                        app.container.sipClientEngine.startAccountRegistration(defaultSip)
+                    }
+                }
             }
         }
 
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "OmniCall SIP Active"
-        val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Listening for incoming VoIP calls"
+        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "SIP Ready • OmniCall"
+        val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Activated Incoming Call • Running in Background"
         val notification = notifManager.buildSipBackgroundNotification(title, subtitle)
 
         acquireWifiLock()

@@ -1177,7 +1177,7 @@ class ActiveCallCoordinator(
                         autoRecallTotalSec = delaySeconds,
                         autoRecallReason = reason,
                         autoRecallAttempt = nextAttempt,
-                        statusMessage = "$reason • Recalling in ${remaining}s"
+                        statusMessage = "$reason • Recalling in ${formatAutoRecallRemaining(remaining)}"
                     )
                 }
                 delay(1000L)
@@ -1278,13 +1278,13 @@ class ActiveCallCoordinator(
             savedRoute != null &&
             currentRecallAttempt < MAX_AUTO_RECALL_ATTEMPTS
         ) {
-            val delaySec = prefs.autoRecallDelaySeconds.coerceIn(3, 60)
+            val delaySec = prefs.autoRecallDelaySeconds.coerceIn(3, 300)
             val nextAttempt = currentRecallAttempt + 1
             _activeCall.value = finished.copy(
                 lifecycle = CallLifecycleState.AUTO_RECALL_COUNTDOWN,
                 isRecording = false,
                 isOnHold = false,
-                statusMessage = "$reason • Recalling in ${delaySec}s",
+                statusMessage = "$reason • Recalling in ${formatAutoRecallRemaining(delaySec)}",
                 autoRecallRemainingSec = delaySec,
                 autoRecallTotalSec = delaySec,
                 autoRecallReason = reason,
@@ -1314,6 +1314,9 @@ class ActiveCallCoordinator(
         currentRecallAttempt = 0
         pendingSipFallbackQueue.clear()
         activeSipFallbackAccount = null
+        if (finished.sourceType == CallSourceType.SIP) {
+            sipClientEngine.cleanupAfterCallIfBackgroundPaused()
+        }
     }
 
     data class SipFailureOutcome(
@@ -1324,6 +1327,21 @@ class ActiveCallCoordinator(
 
     companion object {
         const val MAX_AUTO_RECALL_ATTEMPTS = 5
+        val AUTO_RECALL_PRESET_SECONDS = listOf(5, 15, 30, 60, 300)
+
+        fun formatAutoRecallPreset(seconds: Int): String = when {
+            seconds >= 60 && seconds % 60 == 0 -> "${seconds / 60}m"
+            else -> "${seconds}s"
+        }
+
+        fun formatAutoRecallRemaining(seconds: Int): String {
+            val clamped = seconds.coerceAtLeast(0)
+            return if (clamped >= 60) {
+                "%d:%02d".format(clamped / 60, clamped % 60)
+            } else {
+                "${clamped}s"
+            }
+        }
         // Strictly retry alternative BD/E.164 format variants ONLY on number/address format ambiguity (404/484).
         // Never retry when callee is busy (486), declines (603), or does not answer (480/408).
         private val RETRYABLE_PRE_RING_CODES = setOf(404, 484)

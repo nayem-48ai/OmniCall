@@ -42,6 +42,7 @@ class CallNotificationManager(private val context: Context) {
         const val ACTION_DECLINE_CALL = "com.example.omnicall.ACTION_DECLINE_CALL"
         const val ACTION_HANGUP_CALL = "com.example.omnicall.ACTION_HANGUP_CALL"
         const val ACTION_RECONNECT_SIP = "com.example.omnicall.ACTION_RECONNECT_SIP"
+        const val ACTION_STOP_SIP_BACKGROUND = "com.example.omnicall.ACTION_STOP_SIP_BACKGROUND"
 
         fun extractShortLineLabel(rawLineBadge: String): String {
             val trimmed = rawLineBadge.trim()
@@ -315,6 +316,12 @@ class CallNotificationManager(private val context: Context) {
             Intent(context, SipBackgroundService::class.java).setAction(ACTION_RECONNECT_SIP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val stopPi = PendingIntent.getService(
+            context,
+            107,
+            Intent(context, SipBackgroundService::class.java).setAction(ACTION_STOP_SIP_BACKGROUND),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(context, CHANNEL_SIP_STATUS)
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
             .setContentTitle(title)
@@ -325,6 +332,7 @@ class CallNotificationManager(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(openPi)
             .addAction(android.R.drawable.ic_menu_rotate, "Refresh", reconnectPi)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPi)
             .build()
     }
 

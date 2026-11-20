@@ -473,8 +473,6 @@ private fun OmniCallRoot(
                         TelephonySettingsScreen(
                             uiState = settingsState,
                             viewModel = settingsViewModel,
-                            onRequestDefaultDialer = requestDefaultDialer,
-                            onRequestPermissions = requestStandardPermissions,
                             onBack = { navController.popBackStack() }
                         )
                     }

@@ -149,6 +149,7 @@ class SipClientEngine(
     @Volatile private var activeNetworkHandle: Long? = null
     @Volatile private var lastTransportError: String? = null
     @Volatile private var lastNetworkHealthCache: CachedNetworkHealth? = null
+    @Volatile private var backgroundIncomingEnabled: Boolean = true
 
     private data class CachedNetworkHealth(
         val accountId: Long,
@@ -219,13 +220,14 @@ class SipClientEngine(
     }
 
     private fun scheduleNetworkReconnect() {
+        if (!backgroundIncomingEnabled) return
         val acc = activeAccount ?: return
         if (!acc.isEnabled || dialogs.isNotEmpty()) return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             delay(800L)
             val currentAcc = activeAccount ?: return@launch
-            if (currentAcc.isEnabled && dialogs.isEmpty()) {
+            if (backgroundIncomingEnabled && currentAcc.isEnabled && dialogs.isEmpty()) {
                 startAccountRegistration(currentAcc)
             }
         }
@@ -388,16 +390,69 @@ class SipClientEngine(
                 startIncomingReader(account)
                 sendRegister(account)
                 startKeepAliveLoop(account)
-                SipBackgroundService.startOrUpdate(
-                    context = context,
-                    title = "SIP Connecting • ${account.displayName}",
-                    subtitle = "${account.sipUri} (${account.transport.label})"
+                if (backgroundIncomingEnabled) {
+                    SipBackgroundService.startOrUpdate(
+                        context = context,
+                        title = "SIP Connecting • ${account.displayName}",
+                        subtitle = "Activating Incoming Call • Running in Background"
+                    )
+                }
+            }
+        }
+    }
+
+    fun isBackgroundIncomingEnabled(): Boolean = backgroundIncomingEnabled
+
+    fun setBackgroundIncomingEnabled(enabled: Boolean, restartIfEnabled: Boolean = true) {
+        backgroundIncomingEnabled = enabled
+        if (!enabled) {
+            SipBackgroundService.stop(context)
+            scope.launch {
+                val acc = activeAccount
+                transportMutex.withLock {
+                    if (dialogs.isEmpty()) {
+                        stopTransportLocked()
+                    }
+                }
+                if (acc != null && dialogs.isEmpty()) {
+                    sipAccountRepository.updateRegistrationStatus(
+                        acc.id,
+                        SipRegistrationStatus.UNREGISTERED,
+                        null
+                    )
+                }
+            }
+        } else if (restartIfEnabled) {
+            scope.launch {
+                val acc = activeAccount ?: sipAccountRepository.getDefaultActiveAccount()
+                if (acc != null && acc.isEnabled) {
+                    startAccountRegistration(acc)
+                }
+            }
+        }
+    }
+
+    fun cleanupAfterCallIfBackgroundPaused() {
+        if (backgroundIncomingEnabled) return
+        scope.launch {
+            val acc = activeAccount
+            transportMutex.withLock {
+                if (!backgroundIncomingEnabled && dialogs.isEmpty()) {
+                    stopTransportLocked()
+                }
+            }
+            if (!backgroundIncomingEnabled && acc != null && dialogs.isEmpty()) {
+                sipAccountRepository.updateRegistrationStatus(
+                    acc.id,
+                    SipRegistrationStatus.UNREGISTERED,
+                    null
                 )
             }
         }
     }
 
     fun reconnectActiveAccountIfNeeded() {
+        if (!backgroundIncomingEnabled) return
         val acc = activeAccount ?: return
         if (!acc.isEnabled) return
         if (!isActiveSocketOpen(acc.transport)) {
@@ -411,12 +466,13 @@ class SipClientEngine(
     }
 
     fun ensureBackgroundServiceIfRegistered() {
+        if (!backgroundIncomingEnabled) return
         val acc = activeAccount ?: return
         if (!acc.isEnabled) return
         SipBackgroundService.startOrUpdate(
             context = context,
             title = "SIP Ready • ${acc.displayName}",
-            subtitle = "Listening in background • ${acc.sipUri}"
+            subtitle = "Activated Incoming Call • Running in Background"
         )
     }
 
@@ -656,11 +712,13 @@ class SipClientEngine(
                     sendRegister(account)
                 }
                 sipAccountRepository.updateRegistrationStatus(account.id, SipRegistrationStatus.REGISTERED)
-                SipBackgroundService.startOrUpdate(
-                    context = context,
-                    title = "SIP Ready • ${account.displayName}",
-                    subtitle = "Listening in background • ${account.sipUri}"
-                )
+                if (backgroundIncomingEnabled) {
+                    SipBackgroundService.startOrUpdate(
+                        context = context,
+                        title = "SIP Ready • ${account.displayName}",
+                        subtitle = "Activated Incoming Call • Running in Background"
+                    )
+                }
                 eventBus.publish(
                     OmniCallEvent.SipRegistrationChanged(
                         account.id,
