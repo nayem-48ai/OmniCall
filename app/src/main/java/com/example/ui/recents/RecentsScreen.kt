@@ -69,10 +69,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import android.widget.Toast
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -311,7 +315,6 @@ fun RecentsScreen(
                                     isSelectionMode = true,
                                     onClick = toggleItemSelection,
                                     onLongClick = toggleItemSelection,
-                                    onInspectHistory = { },
                                     onCallBack = { },
                                     onEditInKeypad = { },
                                     onToggleBlock = { },
@@ -370,7 +373,6 @@ fun RecentsScreen(
                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                             selectedIds = groupIdsSet
                                         },
-                                        onInspectHistory = { onOpenCallHistory(entry.log.remoteHandle) },
                                         onCallBack = { onCallBack(entry.log.remoteHandle) },
                                         onEditInKeypad = { onEditInKeypad(entry.log.remoteHandle) },
                                         onToggleBlock = {
@@ -636,7 +638,6 @@ private fun CallLogCard(
     isSelectionMode: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onInspectHistory: () -> Unit,
     onCallBack: () -> Unit,
     onEditInKeypad: () -> Unit,
     onToggleBlock: () -> Unit,
@@ -644,6 +645,8 @@ private fun CallLogCard(
 ) {
     val item = entry.log
     var showMenu by remember { mutableStateOf(false) }
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     val directionIcon = when (item.direction) {
         CallDirection.OUTGOING -> Icons.AutoMirrored.Rounded.CallMade
@@ -892,11 +895,13 @@ private fun CallLogCard(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Call history") },
+                            text = { Text("Copy to clipboard") },
                             onClick = {
                                 showMenu = false
-                                onInspectHistory()
-                            }
+                                clipboardManager.setText(AnnotatedString(item.remoteHandle))
+                                Toast.makeText(context, "Copied ${item.remoteHandle}", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.testTag("copy_recent_${item.id}")
                         )
                         DropdownMenuItem(
                             text = { Text("Edit in keypad") },

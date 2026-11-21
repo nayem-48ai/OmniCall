@@ -43,8 +43,8 @@ data class MissedCallRecord(
 class CallNotificationManager(private val context: Context) {
 
     companion object {
-        const val CHANNEL_INCOMING = "omnicall_incoming_calls_v2"
-        const val CHANNEL_INCOMING_CELLULAR = "omnicall_incoming_cellular_v1"
+        const val CHANNEL_INCOMING = "omnicall_incoming_calls_v3"
+        const val CHANNEL_INCOMING_CELLULAR = "omnicall_incoming_cellular_v2"
         const val CHANNEL_ONGOING = "omnicall_ongoing_calls"
         const val CHANNEL_SIP_STATUS = "omnicall_sip_background_status"
         const val CHANNEL_MISSED = "omnicall_missed_calls_v1"
@@ -220,28 +220,30 @@ class CallNotificationManager(private val context: Context) {
 
     fun ensureChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            // Clean up legacy channel IDs if present so updated high-priority heads-up rules apply immediately
+            runCatching {
+                notificationManager.deleteNotificationChannel("omnicall_incoming_calls_v2")
+                notificationManager.deleteNotificationChannel("omnicall_incoming_cellular_v1")
+            }
+
+            // SIP ringtone & vibration are played by IncomingRingerController respecting device audio profile,
+            // while high-priority channel ensures CallStyle heads-up mini pop-up always peeks cleanly.
             val incomingChannel = NotificationChannel(
                 CHANNEL_INCOMING,
                 context.getString(R.string.notification_channel_incoming_name),
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Full-screen and heads-up incoming SIP call alerts"
-                setSound(
-                    ringtoneUri,
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
+                setSound(null, null)
+                enableLights(true)
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0L, 800L, 600L, 800L)
+                vibrationPattern = longArrayOf(0L, 25L)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
-            // Cellular SIM calls already play native ringtone & vibration via Android Telecom.
-            // Using a silent IMPORTANCE_HIGH channel triggers instant heads-up + FullScreenIntent
-            // without double-ringing or audio-focus delay.
+            // Cellular SIM calls play native ringtone & vibration via Android Telecom.
+            // High-priority alerting channel ensures instant floating CallStyle heads-up mini pop-up
+            // over active apps without double-ringing.
             val cellularChannel = NotificationChannel(
                 CHANNEL_INCOMING_CELLULAR,
                 "Incoming Cellular Calls",
@@ -249,7 +251,9 @@ class CallNotificationManager(private val context: Context) {
             ).apply {
                 description = "Full-screen and heads-up incoming SIM call display"
                 setSound(null, null)
-                enableVibration(false)
+                enableLights(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0L, 25L)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
@@ -373,9 +377,6 @@ class CallNotificationManager(private val context: Context) {
             .addPerson(callerPerson)
             .setStyle(callStyle)
 
-        if (isCellularTelecom) {
-            builder.setSilent(true)
-        }
         if (avatarBitmap != null) {
             builder.setLargeIcon(avatarBitmap)
         }

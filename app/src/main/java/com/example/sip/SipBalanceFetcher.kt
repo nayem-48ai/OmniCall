@@ -13,7 +13,6 @@ import kotlinx.serialization.json.contentOrNull
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
-import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.CookiePolicy
 import java.net.HttpURLConnection
@@ -89,82 +88,107 @@ class SipBalanceFetcher(
         username: String,
         password: String
     ): String {
+        val validatedInitial = validateBalanceUrl(targetUrl)
+            ?: throw IllegalArgumentException("Balance URL must use HTTPS")
+
         val cookieManager = CookieManager(null, CookiePolicy.ACCEPT_ALL)
-        val previousHandler = CookieHandler.getDefault()
-        CookieHandler.setDefault(cookieManager)
+        var currentUrl = validatedInitial.toExternalForm()
+        var method = "POST"
+        val postBody = "username=${URLEncoder.encode(username, "UTF-8")}" +
+            "&password=${URLEncoder.encode(password, "UTF-8")}"
 
-        try {
-            var currentUrl = targetUrl
-            var method = "POST"
-            val postBody = "username=${URLEncoder.encode(username, "UTF-8")}" +
-                "&password=${URLEncoder.encode(password, "UTF-8")}"
+        for (hop in 0 until 6) {
+            val parsedUrl = validateBalanceUrl(currentUrl)
+                ?: throw IllegalStateException("Refusing non-HTTPS balance endpoint")
+            val uri = parsedUrl.toURI()
+            val conn = (parsedUrl.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                requestMethod = method
+                connectTimeout = 15_000
+                readTimeout = 15_000
+                useCaches = false
+                setRequestProperty("Connection", "close")
+                setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 13; RMX3286 Build/SP1A.210812.016) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.8103.40 Mobile Safari/537.36"
+                )
+                val hostHeader = if (parsedUrl.port > 0) "${parsedUrl.host}:${parsedUrl.port}" else parsedUrl.host
+                setRequestProperty("Host", hostHeader)
+                setRequestProperty("Accept", "application/json, text/html, */*")
 
-            for (hop in 0 until 6) {
-                val parsedUrl = URL(currentUrl)
-                val conn = (parsedUrl.openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = false
-                    requestMethod = method
-                    connectTimeout = 15_000
-                    readTimeout = 15_000
-                    useCaches = false
-                    setRequestProperty("Connection", "close")
-                    setRequestProperty(
-                        "User-Agent",
-                        "Mozilla/5.0 (Linux; Android 13; RMX3286 Build/SP1A.210812.016) " +
-                            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.8103.40 Mobile Safari/537.36"
-                    )
-                    val hostHeader = if (parsedUrl.port > 0) "${parsedUrl.host}:${parsedUrl.port}" else parsedUrl.host
-                    setRequestProperty("Host", hostHeader)
-                    setRequestProperty("Accept", "application/json, text/html, */*")
-
-                    if (method == "POST") {
-                        doOutput = true
-                        setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                    }
+                val cookieHeaders = runCatching { cookieManager.get(uri, emptyMap())["Cookie"] }.getOrNull()
+                if (!cookieHeaders.isNullOrEmpty()) {
+                    setRequestProperty("Cookie", cookieHeaders.joinToString("; "))
                 }
 
                 if (method == "POST") {
-                    OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
-                        writer.write(postBody)
-                        writer.flush()
-                    }
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
                 }
-
-                val code = conn.responseCode
-                if (code in 300..399) {
-                    val location = conn.getHeaderField("Location")?.trim()
-                    conn.disconnect()
-                    if (location.isNullOrBlank()) {
-                        throw IllegalStateException("Redirect missing Location header (HTTP $code)")
-                    }
-                    currentUrl = URL(parsedUrl, location).toExternalForm()
-                    method = if (code == HttpURLConnection.HTTP_MOVED_PERM ||
-                        code == HttpURLConnection.HTTP_MOVED_TEMP ||
-                        code == HttpURLConnection.HTTP_SEE_OTHER
-                    ) {
-                        "GET"
-                    } else {
-                        method
-                    }
-                    continue
-                }
-
-                val stream = if (code >= 400) conn.errorStream else conn.inputStream
-                val body = stream?.let {
-                    BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).use { reader ->
-                        reader.readText()
-                    }
-                }.orEmpty()
-                conn.disconnect()
-
-                if (code >= 400 && body.isBlank()) {
-                    throw IllegalStateException("Server returned HTTP $code")
-                }
-                return body
             }
-            throw IllegalStateException("Too many redirects")
-        } finally {
-            CookieHandler.setDefault(previousHandler)
+
+            if (method == "POST") {
+                OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
+                    writer.write(postBody)
+                    writer.flush()
+                }
+            }
+
+            val code = conn.responseCode
+            runCatching { cookieManager.put(uri, conn.headerFields) }
+            if (code in 300..399) {
+                val location = conn.getHeaderField("Location")?.trim()
+                conn.disconnect()
+                if (location.isNullOrBlank()) {
+                    throw IllegalStateException("Redirect missing Location header (HTTP $code)")
+                }
+                val resolvedNext = URL(parsedUrl, location).toExternalForm()
+                if (!isSafeRedirectTarget(validatedInitial.toExternalForm(), resolvedNext)) {
+                    throw IllegalStateException("Blocked unsafe redirect target")
+                }
+                currentUrl = resolvedNext
+                method = if (code == HttpURLConnection.HTTP_MOVED_PERM ||
+                    code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    code == HttpURLConnection.HTTP_SEE_OTHER
+                ) {
+                    "GET"
+                } else {
+                    method
+                }
+                continue
+            }
+
+            val stream = if (code >= 400) conn.errorStream else conn.inputStream
+            val body = stream?.let {
+                BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).use { reader ->
+                    reader.readText()
+                }
+            }.orEmpty()
+            conn.disconnect()
+
+            if (code >= 400 && body.isBlank()) {
+                throw IllegalStateException("Server returned HTTP $code")
+            }
+            return body
+        }
+        throw IllegalStateException("Too many redirects")
+    }
+
+    companion object {
+        fun validateBalanceUrl(rawUrl: String): URL? {
+            val parsed = runCatching { URL(rawUrl.trim()) }.getOrNull() ?: return null
+            if (!parsed.protocol.equals("https", ignoreCase = true)) return null
+            if (parsed.host.isNullOrBlank()) return null
+            return parsed
+        }
+
+        fun isSafeRedirectTarget(initialUrl: String, nextUrl: String): Boolean {
+            val init = validateBalanceUrl(initialUrl) ?: return false
+            val next = validateBalanceUrl(nextUrl) ?: return false
+            val initHost = init.host.lowercase()
+            val nextHost = next.host.lowercase()
+            return nextHost == initHost || nextHost.endsWith(".$initHost")
         }
     }
 }

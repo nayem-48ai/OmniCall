@@ -82,9 +82,12 @@ import com.example.ui.viewmodel.ContactsViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private const val MAX_VCF_FILE_BYTES = 10L * 1024L * 1024L
 
 @Composable
 fun ContactsScreen(
@@ -124,19 +127,23 @@ fun ContactsScreen(
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val loaded = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 runCatching {
+                    val reportedSize = resolveFileSizeBytes(context, uri)
+                    if (reportedSize != null && reportedSize > MAX_VCF_FILE_BYTES) {
+                        error("Selected .vcf file exceeds 10 MB limit")
+                    }
                     val fileName = resolveDisplayFileName(context, uri)
                     val content = context.contentResolver.openInputStream(uri)?.use { stream ->
-                        stream.bufferedReader(Charsets.UTF_8).readText()
+                        readStreamBoundedUtf8(stream, MAX_VCF_FILE_BYTES)
                     } ?: ""
                     fileName to content
-                }.getOrNull()
+                }
             }
-            if (loaded == null) {
-                viewModel.showTransferError("Unable to open selected .vcf file")
-            } else {
-                viewModel.loadParsedVcfForImport(loaded.first, loaded.second)
+            result.onSuccess { (fileName, content) ->
+                viewModel.loadParsedVcfForImport(fileName, content)
+            }.onFailure { err ->
+                viewModel.showTransferError(err.message ?: "Unable to open selected .vcf file")
             }
         }
     }
@@ -486,6 +493,30 @@ private fun resolveDisplayFileName(context: android.content.Context, uri: Uri): 
     return queried?.takeIf { it.isNotBlank() }
         ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
         ?: "contacts.vcf"
+}
+
+private fun resolveFileSizeBytes(context: android.content.Context, uri: Uri): Long? {
+    return runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+        }
+    }.getOrNull()
+}
+
+private fun readStreamBoundedUtf8(stream: java.io.InputStream, maxBytes: Long): String {
+    val buffer = ByteArray(8192)
+    val out = ByteArrayOutputStream()
+    var totalRead = 0L
+    while (true) {
+        val read = stream.read(buffer)
+        if (read == -1) break
+        totalRead += read
+        if (totalRead > maxBytes) {
+            error("Selected .vcf file exceeds 10 MB limit")
+        }
+        out.write(buffer, 0, read)
+    }
+    return out.toString(Charsets.UTF_8.name())
 }
 
 @Composable

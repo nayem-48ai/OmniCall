@@ -197,21 +197,21 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
 
         val callId = SipMessageCodec.newCallId(domain)
         val fromTag = SipMessageCodec.newTag()
-        val initialRegister = SipMessageCodec.buildRegisterRequest(
-            domain = domain,
-            username = username,
-            localIp = localIp,
-            localPort = candidate.port,
-            transport = candidate.transport,
-            callId = callId,
-            cseq = 1,
-            fromTag = fromTag,
-            branch = SipMessageCodec.newBranch(),
-            expiresSec = 300
-        )
-
         val firstRaw = runCatching {
-            sendAndReceive(candidate.transport, address, candidate.port, initialRegister)
+            sendAndReceive(candidate.transport, address, candidate.port) { boundPort ->
+                SipMessageCodec.buildRegisterRequest(
+                    domain = domain,
+                    username = username,
+                    localIp = localIp,
+                    localPort = boundPort,
+                    transport = candidate.transport,
+                    callId = callId,
+                    cseq = 1,
+                    fromTag = fromTag,
+                    branch = SipMessageCodec.newBranch(),
+                    expiresSec = 300
+                )
+            }
         }.getOrElse {
             return ProbeOutcome(false, false, errorDetail = it.message ?: "Socket timeout")
         } ?: return ProbeOutcome(false, false, errorDetail = "No SIP response received")
@@ -224,7 +224,10 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
             ?: "SIP Proxy"
 
         return when (firstParsed.statusCode) {
-            in 200..299 -> ProbeOutcome(reachable = true, authSucceeded = true, serverBanner = banner)
+            in 200..299 -> {
+                sendBestEffortUnregister(candidate, address, domain, username, localIp, callId, fromTag, cseq = 2, authHeader = null)
+                ProbeOutcome(reachable = true, authSucceeded = true, serverBanner = banner)
+            }
             401, 407 -> {
                 val challenge = SipMessageCodec.parseChallenge(firstParsed)
                     ?: return ProbeOutcome(true, false, banner, "Missing Digest challenge header")
@@ -235,25 +238,27 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
                     method = "REGISTER",
                     uri = "sip:$domain"
                 )
-                val authedRegister = SipMessageCodec.buildRegisterRequest(
-                    domain = domain,
-                    username = username,
-                    localIp = localIp,
-                    localPort = candidate.port,
-                    transport = candidate.transport,
-                    callId = callId,
-                    cseq = 2,
-                    fromTag = fromTag,
-                    branch = SipMessageCodec.newBranch(),
-                    expiresSec = 300,
-                    authHeader = authHeader
-                )
                 val secondRaw = runCatching {
-                    sendAndReceive(candidate.transport, address, candidate.port, authedRegister)
+                    sendAndReceive(candidate.transport, address, candidate.port) { boundPort ->
+                        SipMessageCodec.buildRegisterRequest(
+                            domain = domain,
+                            username = username,
+                            localIp = localIp,
+                            localPort = boundPort,
+                            transport = candidate.transport,
+                            callId = callId,
+                            cseq = 2,
+                            fromTag = fromTag,
+                            branch = SipMessageCodec.newBranch(),
+                            expiresSec = 300,
+                            authHeader = authHeader
+                        )
+                    }
                 }.getOrNull() ?: return ProbeOutcome(true, false, banner, "Auth response timeout")
 
                 val secondParsed = SipMessageCodec.parse(secondRaw)
                 if (secondParsed != null && secondParsed.statusCode in 200..299) {
+                    sendBestEffortUnregister(candidate, address, domain, username, localIp, callId, fromTag, cseq = 3, authHeader = authHeader)
                     ProbeOutcome(reachable = true, authSucceeded = true, serverBanner = banner)
                 } else {
                     val code = secondParsed?.statusCode ?: 0
@@ -270,17 +275,48 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
         }
     }
 
+    private fun sendBestEffortUnregister(
+        candidate: ProbeCandidate,
+        address: InetAddress,
+        domain: String,
+        username: String,
+        localIp: String,
+        callId: String,
+        fromTag: String,
+        cseq: Int,
+        authHeader: Pair<String, String>?
+    ) {
+        runCatching {
+            sendAndReceive(candidate.transport, address, candidate.port, timeoutMs = 800) { boundPort ->
+                SipMessageCodec.buildRegisterRequest(
+                    domain = domain,
+                    username = username,
+                    localIp = localIp,
+                    localPort = boundPort,
+                    transport = candidate.transport,
+                    callId = callId,
+                    cseq = cseq,
+                    fromTag = fromTag,
+                    branch = SipMessageCodec.newBranch(),
+                    expiresSec = 0,
+                    authHeader = authHeader
+                )
+            }
+        }
+    }
+
     private fun sendAndReceive(
         transport: SipTransport,
         address: InetAddress,
         port: Int,
-        payload: String
+        timeoutMs: Int = 2500,
+        buildPayload: (boundLocalPort: Int) -> String
     ): String? {
-        val bytes = payload.toByteArray(Charsets.UTF_8)
         return when (transport) {
             SipTransport.UDP -> {
                 DatagramSocket().use { socket ->
-                    socket.soTimeout = 2200
+                    socket.soTimeout = timeoutMs.coerceAtMost(2200)
+                    val bytes = buildPayload(socket.localPort).toByteArray(Charsets.UTF_8)
                     socket.send(DatagramPacket(bytes, bytes.size, address, port))
                     val rxBuf = ByteArray(8192)
                     val rxPacket = DatagramPacket(rxBuf, rxBuf.size)
@@ -290,8 +326,9 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
             }
             SipTransport.TCP -> {
                 Socket().use { socket ->
-                    socket.connect(InetSocketAddress(address, port), 2500)
-                    socket.soTimeout = 2500
+                    socket.connect(InetSocketAddress(address, port), timeoutMs)
+                    socket.soTimeout = timeoutMs
+                    val bytes = buildPayload(socket.localPort).toByteArray(Charsets.UTF_8)
                     socket.getOutputStream().apply {
                         write(bytes)
                         flush()
@@ -302,9 +339,10 @@ class SipAutoConfigEngine(private val dnsSrvResolver: DnsSrvResolver) {
             SipTransport.TLS -> {
                 val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
                 (factory.createSocket() as SSLSocket).use { socket ->
-                    socket.connect(InetSocketAddress(address, port), 3000)
-                    socket.soTimeout = 3000
+                    socket.connect(InetSocketAddress(address, port), timeoutMs.coerceAtLeast(3000))
+                    socket.soTimeout = timeoutMs.coerceAtLeast(3000)
                     socket.startHandshake()
+                    val bytes = buildPayload(socket.localPort).toByteArray(Charsets.UTF_8)
                     socket.getOutputStream().apply {
                         write(bytes)
                         flush()

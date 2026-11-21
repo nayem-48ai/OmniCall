@@ -12,6 +12,7 @@ enum class SipTransport(val label: String, val defaultPort: Int) {
 
 enum class SipRegistrationStatus(val label: String) {
     UNREGISTERED("Offline"),
+    STANDBY("Outbound Ready"),
     DISCOVERING("Auto-Discovering"),
     REGISTERING("Registering"),
     REGISTERED("Registered"),
@@ -155,7 +156,7 @@ enum class RecordingType(
     INTERNAL_AND_EXTERNAL(
         label = "Internal and external Voice",
         shortLabel = "Both Sides",
-        description = "Records both the other side's conversation and your microphone"
+        description = "Records your microphone and SIP remote audio (SIM remote voice capture depends on device OS support)"
     ),
     ONLY_INTERNAL(
         label = "Only Internal Voice",
@@ -207,8 +208,8 @@ enum class CallLifecycleState {
 }
 
 data class AudioQualityTelemetry(
-    val codecName: String = "HD Wideband",
-    val sampleRateHz: Int = 16000,
+    val codecName: String = "PCMU",
+    val sampleRateHz: Int = 8000,
     val transportLabel: String = "Cellular",
     val aecActive: Boolean = false,
     val nsActive: Boolean = false,

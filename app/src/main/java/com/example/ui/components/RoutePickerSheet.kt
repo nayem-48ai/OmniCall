@@ -48,6 +48,7 @@ fun SipStatusPill(
         SipRegistrationStatus.REGISTERED -> SignalConnected
         SipRegistrationStatus.REGISTERING,
         SipRegistrationStatus.DISCOVERING -> SignalWarning
+        SipRegistrationStatus.STANDBY -> MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
         SipRegistrationStatus.ERROR -> MaterialTheme.colorScheme.error
         SipRegistrationStatus.UNREGISTERED -> MaterialTheme.colorScheme.outline
         null -> MaterialTheme.colorScheme.outline
@@ -57,6 +58,7 @@ fun SipStatusPill(
         status != null && showBalance && !balanceText.isNullOrBlank() -> "SIP • $balanceText"
         status == SipRegistrationStatus.REGISTERED -> "SIP • ${transportLabel ?: "OK"}"
         status == SipRegistrationStatus.REGISTERING || status == SipRegistrationStatus.DISCOVERING -> "SIP • Connecting"
+        status == SipRegistrationStatus.STANDBY -> "SIP • Outbound"
         status == SipRegistrationStatus.ERROR -> "SIP • Error"
         status == SipRegistrationStatus.UNREGISTERED -> "SIP • Offline"
         else -> "No SIP"
@@ -208,10 +210,10 @@ fun OutgoingRoutePickerSheet(
                                 Icon(
                                     imageVector = Icons.Rounded.CellTower,
                                     contentDescription = route.account.status.label,
-                                    tint = if (route.account.status == SipRegistrationStatus.REGISTERED) {
-                                        SignalConnected
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    tint = when (route.account.status) {
+                                        SipRegistrationStatus.REGISTERED -> SignalConnected
+                                        SipRegistrationStatus.STANDBY -> MaterialTheme.colorScheme.primary
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                                     },
                                     modifier = Modifier.size(20.dp)
                                 )

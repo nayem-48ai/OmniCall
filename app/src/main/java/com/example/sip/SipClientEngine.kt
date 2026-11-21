@@ -417,7 +417,7 @@ class SipClientEngine(
                 if (acc != null && dialogs.isEmpty()) {
                     sipAccountRepository.updateRegistrationStatus(
                         acc.id,
-                        SipRegistrationStatus.UNREGISTERED,
+                        if (acc.isEnabled) SipRegistrationStatus.STANDBY else SipRegistrationStatus.UNREGISTERED,
                         null
                     )
                 }
@@ -444,7 +444,7 @@ class SipClientEngine(
             if (!backgroundIncomingEnabled && acc != null && dialogs.isEmpty()) {
                 sipAccountRepository.updateRegistrationStatus(
                     acc.id,
-                    SipRegistrationStatus.UNREGISTERED,
+                    if (acc.isEnabled) SipRegistrationStatus.STANDBY else SipRegistrationStatus.UNREGISTERED,
                     null
                 )
             }
@@ -847,7 +847,7 @@ class SipClientEngine(
                     method = "INVITE",
                     uri = dialog.requestUri
                 )
-                val sdp = SipMessageCodec.buildSdpOffer(localIp, dialog.localRtpPort, dialog.preferWideband)
+                val sdp = SipMessageCodec.buildSdpOffer(effectiveContactIp(), dialog.localRtpPort, dialog.preferWideband)
                 val nextCseq = cseqCounter.incrementAndGet()
                 val nextBranch = SipMessageCodec.newBranch()
                 dialog.cseq = nextCseq
@@ -873,6 +873,7 @@ class SipClientEngine(
                 )
                 sendRaw(invite, account, dialog.peerEndpoint)
                 launchUdpInviteRetransmits(callId, nextCseq, invite, account, dialog.peerEndpoint)
+                launchInviteTimers(callId, nextCseq)
             }
             in 200..299 -> {
                 val alreadyConfirmed = dialog.isConfirmed
@@ -945,7 +946,7 @@ class SipClientEngine(
             val toTag = existingDialog.fromHeader.substringAfter("tag=", SipMessageCodec.newTag())
             if (existingDialog.isConfirmed) {
                 SipMessageCodec.parseSdp(msg.body)?.let { existingDialog.remoteSdp = it }
-                val sdp = SipMessageCodec.buildSdpOffer(localIp, existingDialog.localRtpPort, existingDialog.preferWideband)
+                val sdp = SipMessageCodec.buildSdpOffer(effectiveContactIp(), existingDialog.localRtpPort, existingDialog.preferWideband)
                 val ok = SipMessageCodec.buildResponse(
                     200, "OK", msg, effectiveContactIp(), effectiveContactPort(),
                     account.username, account.transport, toTag,
@@ -959,6 +960,15 @@ class SipClientEngine(
                 )
                 sendRaw(ringing, account, existingDialog.peerEndpoint)
             }
+            return
+        }
+
+        if (dialogs.keys.any { it != callId }) {
+            val busy = SipMessageCodec.buildResponse(
+                486, "Busy Here", msg, effectiveContactIp(), effectiveContactPort(),
+                account.username, account.transport, SipMessageCodec.newTag()
+            )
+            sendRaw(busy, account, sourcePeer)
             return
         }
 
@@ -1112,7 +1122,7 @@ class SipClientEngine(
         )
         dialogs[callId] = dialog
 
-        val sdp = SipMessageCodec.buildSdpOffer(localIp, localRtpPort, preferWideband)
+        val sdp = SipMessageCodec.buildSdpOffer(effectiveContactIp(), localRtpPort, preferWideband)
         val invite = SipMessageCodec.buildInviteRequest(
             targetUri = targetUri,
             domain = account.domain,
@@ -1153,7 +1163,7 @@ class SipClientEngine(
                 }
             }
             if (recovered) {
-                val retrySdp = SipMessageCodec.buildSdpOffer(localIp, localRtpPort, preferWideband)
+                val retrySdp = SipMessageCodec.buildSdpOffer(effectiveContactIp(), localRtpPort, preferWideband)
                 val retryInvite = SipMessageCodec.buildInviteRequest(
                     targetUri = targetUri,
                     domain = account.domain,
@@ -1173,6 +1183,7 @@ class SipClientEngine(
                 sent = sendRaw(retryInvite, account)
                 if (sent) {
                     launchUdpInviteRetransmits(callId, cseq, retryInvite, account, null)
+                    launchInviteTimers(callId, cseq)
                     return@withContext true
                 }
             }
@@ -1181,6 +1192,7 @@ class SipClientEngine(
         }
 
         launchUdpInviteRetransmits(callId, cseq, invite, account, null)
+        launchInviteTimers(callId, cseq)
         true
     }
 
@@ -1203,6 +1215,43 @@ class SipClientEngine(
         }
     }
 
+    private fun launchInviteTimers(callId: String, expectedCseq: Int) {
+        scope.launch {
+            delay(12_000L)
+            val atResponseCheck = dialogs[callId] ?: return@launch
+            if (!atResponseCheck.gotResponse &&
+                !atResponseCheck.gotEarlyRinging &&
+                !atResponseCheck.isConfirmed &&
+                atResponseCheck.cseq == expectedCseq
+            ) {
+                dialogs.remove(callId)
+                _signalingEvents.emit(
+                    SipSignalingEvent.CallFailed(
+                        callId = callId,
+                        reason = "SIP Server timeout (408)",
+                        statusCode = 408,
+                        beforeEarlyRinging = true
+                    )
+                )
+                return@launch
+            }
+
+            delay(48_000L)
+            val atAnswerCheck = dialogs[callId] ?: return@launch
+            if (!atAnswerCheck.isConfirmed && atAnswerCheck.cseq == expectedCseq) {
+                terminateCall(callId)
+                _signalingEvents.emit(
+                    SipSignalingEvent.CallFailed(
+                        callId = callId,
+                        reason = "No answer",
+                        statusCode = 480,
+                        beforeEarlyRinging = !atAnswerCheck.gotEarlyRinging
+                    )
+                )
+            }
+        }
+    }
+
     suspend fun answerIncomingInvite(
         callId: String,
         localRtpPort: Int,
@@ -1213,7 +1262,7 @@ class SipClientEngine(
         dialog.localRtpPort = localRtpPort
         dialog.isConfirmed = true
         dialog.ackReceived = false
-        val sdp = SipMessageCodec.buildSdpOffer(localIp, localRtpPort, preferWideband)
+        val sdp = SipMessageCodec.buildSdpOffer(effectiveContactIp(), localRtpPort, preferWideband)
         val ok = SipMessageCodec.buildResponse(
             statusCode = 200,
             reasonPhrase = "OK",
@@ -1243,7 +1292,7 @@ class SipClientEngine(
     suspend fun setHold(callId: String, hold: Boolean) = withContext(Dispatchers.IO) {
         val dialog = dialogs[callId] ?: return@withContext
         val direction = if (hold) "sendonly" else "sendrecv"
-        val sdp = SipMessageCodec.buildSdpOffer(localIp, dialog.localRtpPort, dialog.preferWideband, direction = direction)
+        val sdp = SipMessageCodec.buildSdpOffer(effectiveContactIp(), dialog.localRtpPort, dialog.preferWideband, direction = direction)
         val nextCseq = cseqCounter.incrementAndGet()
         dialog.cseq = nextCseq
         val reInvite = SipMessageCodec.buildSimpleInDialogRequest(

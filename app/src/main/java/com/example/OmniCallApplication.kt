@@ -14,12 +14,14 @@ import com.example.data.security.KeystoreCredentialVault
 import com.example.domain.ai.CallEventBus
 import com.example.domain.ai.DefaultCallEventBus
 import com.example.domain.model.SipBalancePreset
+import com.example.domain.model.SipRegistrationStatus
 import com.example.sip.DnsSrvResolver
 import com.example.sip.SipAutoConfigEngine
 import com.example.sip.SipBalanceFetcher
 import com.example.sip.SipClientEngine
 import com.example.telecom.ActiveCallCoordinator
 import com.example.telecom.CallNotificationManager
+import com.example.telecom.IncomingRingerController
 import com.example.telecom.ProximitySensorWakeLockManager
 import com.example.telecom.SimSubscriptionDetector
 import com.example.telecom.TelecomCallManager
@@ -70,6 +72,7 @@ class AppContainer(application: Application) {
     val simSubscriptionDetector: SimSubscriptionDetector by lazy { SimSubscriptionDetector(application) }
     val telecomCallManager: TelecomCallManager by lazy { TelecomCallManager(application, simSubscriptionDetector) }
     val callNotificationManager: CallNotificationManager by lazy { CallNotificationManager(application) }
+    val incomingRingerController: IncomingRingerController by lazy { IncomingRingerController(application) }
     val proximityWakeLockManager: ProximitySensorWakeLockManager by lazy {
         ProximitySensorWakeLockManager(application)
     }
@@ -87,6 +90,7 @@ class AppContainer(application: Application) {
             callLogRepository = callLogRepository,
             prefsRepository = preferencesRepository,
             notificationManager = callNotificationManager,
+            ringerController = incomingRingerController,
             proximityWakeLockManager = proximityWakeLockManager,
             eventBus = eventBus
         )
@@ -123,6 +127,14 @@ class OmniCallApplication : Application() {
             if (defaultSip != null) {
                 if (prefs.receiveIncomingSipCalls) {
                     container.sipClientEngine.startAccountRegistration(defaultSip)
+                } else {
+                    runCatching {
+                        container.sipAccountRepository.updateRegistrationStatus(
+                            defaultSip.id,
+                            SipRegistrationStatus.STANDBY,
+                            null
+                        )
+                    }
                 }
                 if (defaultSip.balancePreset != SipBalancePreset.NONE && defaultSip.showBalanceInKeypad) {
                     container.sipBalanceFetcher.fetchBalance(defaultSip)

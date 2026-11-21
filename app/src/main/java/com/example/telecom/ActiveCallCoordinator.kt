@@ -54,8 +54,6 @@ import kotlinx.coroutines.sync.withLock
 import java.lang.ref.WeakReference
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.PI
-import kotlin.math.sin
 
 /**
  * Unified Call Coordinator bridging:
@@ -77,6 +75,7 @@ class ActiveCallCoordinator(
     private val callLogRepository: CallLogRepository,
     private val prefsRepository: AppPreferencesRepository,
     private val notificationManager: CallNotificationManager,
+    private val ringerController: IncomingRingerController,
     private val proximityWakeLockManager: ProximitySensorWakeLockManager,
     private val eventBus: CallEventBus
 ) {
@@ -527,6 +526,15 @@ class ActiveCallCoordinator(
             return
         }
 
+        val current = _activeCall.value
+        if (current.lifecycle != CallLifecycleState.IDLE &&
+            current.lifecycle != CallLifecycleState.ENDED &&
+            current.callId != event.callId
+        ) {
+            sipClientEngine.terminateCall(event.callId)
+            return
+        }
+
         val interceptor = callInterceptor
         if (interceptor != null) {
             when (interceptor.evaluateIncomingCall(event.callId, event.fromUri, CallSourceType.SIP)) {
@@ -582,6 +590,7 @@ class ActiveCallCoordinator(
             callerPhotoUri = null,
             isCellularTelecom = false
         )
+        ringerController.startRinging()
         if (CallNotificationManager.shouldLaunchFullScreenIncomingUi(context, isCellularTelecom = false)) {
             runCatching {
                 context.startActivity(
@@ -596,6 +605,7 @@ class ActiveCallCoordinator(
     }
 
     fun answerIncomingCall() {
+        ringerController.stopRinging()
         notificationManager.cancelIncomingNotification()
         val current = _activeCall.value
         if (current.sourceType != CallSourceType.SIP) {
@@ -616,6 +626,7 @@ class ActiveCallCoordinator(
     }
 
     fun declineIncomingCall() {
+        ringerController.stopRinging()
         notificationManager.cancelIncomingNotification()
         endedByLocalUser = true
         val current = _activeCall.value
@@ -776,10 +787,6 @@ class ActiveCallCoordinator(
         if (current.sourceType == CallSourceType.SIP) {
             scope.launch {
                 sipClientEngine.sendDtmfInfo(current.callId, digit)
-                val pcmTone = generateDtmfPcm16k(digit, durationMs = 160)
-                if (pcmTone.isNotEmpty()) {
-                    rtpAudioEngine.injectUplinkAudio(pcmTone, 16000)
-                }
             }
         } else {
             val nativeCall = nativeInCallRef?.get()
@@ -810,32 +817,6 @@ class ActiveCallCoordinator(
             else -> return
         }
         runCatching { dtmfToneGenerator?.startTone(tone, 140) }
-    }
-
-    private fun generateDtmfPcm16k(digit: Char, durationMs: Int): ShortArray {
-        val freqs = when (digit) {
-            '1' -> 697.0 to 1209.0
-            '2' -> 697.0 to 1336.0
-            '3' -> 697.0 to 1477.0
-            '4' -> 770.0 to 1209.0
-            '5' -> 770.0 to 1336.0
-            '6' -> 770.0 to 1477.0
-            '7' -> 852.0 to 1209.0
-            '8' -> 852.0 to 1336.0
-            '9' -> 852.0 to 1477.0
-            '*' -> 941.0 to 1209.0
-            '0' -> 941.0 to 1336.0
-            '#' -> 941.0 to 1477.0
-            else -> return ShortArray(0)
-        }
-        val sampleRate = 16000
-        val count = (sampleRate * durationMs) / 1000
-        val amplitude = 11000.0
-        return ShortArray(count) { i ->
-            val t = i.toDouble() / sampleRate
-            val v = amplitude * (sin(2.0 * PI * freqs.first * t) + sin(2.0 * PI * freqs.second * t)) * 0.5
-            v.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-        }
     }
 
     /**
@@ -1274,6 +1255,7 @@ class ActiveCallCoordinator(
 
         rtpAudioEngine.stopLocalRingback()
         rtpAudioEngine.stopMediaSession()
+        ringerController.stopRinging()
         proximityWakeLockManager.release()
         notificationManager.cancelIncomingNotification()
         VoipCallForegroundService.stop(context)

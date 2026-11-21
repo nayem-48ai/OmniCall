@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -62,6 +63,7 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
 
     private val injectedUplinkQueue = ConcurrentLinkedQueue<ShortArray>()
 
+    private var audioFocusRequest: AudioFocusRequest? = null
     private var rtpSocket: DatagramSocket? = null
     private var txJob: Job? = null
     private var rxJob: Job? = null
@@ -182,10 +184,12 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
 
         val codecName = remoteSdp?.codecName ?: "PCMU"
         val payloadType = remoteSdp?.payloadType ?: 0
+        val negotiatedRateHz = remoteSdp?.sampleRateHz ?: 8000
+        val codecRateKhz = (negotiatedRateHz / 1000).coerceAtLeast(8)
 
         _telemetry.value = AudioQualityTelemetry(
-            codecName = "$codecName • 16kHz HD",
-            sampleRateHz = sampleRate,
+            codecName = "$codecName • ${codecRateKhz}kHz RTP",
+            sampleRateHz = negotiatedRateHz,
             transportLabel = transportLabel,
             aecActive = aecOn,
             nsActive = nsOn,
@@ -279,6 +283,7 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
             var expectedSeq = -1
             var totalPackets = 0
             var lostPackets = 0
+            val jitterBuffer = RtpJitterBuffer(minBufferedFrames = 2, maxBufferSize = 12)
 
             while (isActive && socket != null) {
                 val packet = DatagramPacket(rxBuf, rxBuf.size)
@@ -298,17 +303,25 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
                 val rxSeq = ((packet.data[2].toInt() and 0xFF) shl 8) or (packet.data[3].toInt() and 0xFF)
                 val rxPt = packet.data[1].toInt() and 0x7F
                 totalPackets++
-                if (expectedSeq != -1 && rxSeq > expectedSeq) {
-                    lostPackets += (rxSeq - expectedSeq).coerceAtMost(10)
+                if (expectedSeq != -1) {
+                    val seqDiff = (rxSeq - expectedSeq).toShort().toInt()
+                    if (seqDiff > 0) {
+                        lostPackets += seqDiff.coerceAtMost(10)
+                    }
                 }
-                expectedSeq = rxSeq + 1
+                if (expectedSeq == -1 || (rxSeq - expectedSeq).toShort().toInt() >= 0) {
+                    expectedSeq = (rxSeq + 1) and 0xFFFF
+                }
 
                 val pcm16k = decodeFromPayloadType(packet.data, 12, packet.length - 12, rxPt)
                 if (!isOnHold && pcm16k.isNotEmpty()) {
-                    track?.write(pcm16k, 0, pcm16k.size)
-                    _downlinkFrames.tryEmit(
-                        AudioFrame(pcm16k, sampleRate, StreamDirection.DOWNLINK_REMOTE)
-                    )
+                    jitterBuffer.offer(rxSeq, pcm16k)
+                    for (orderedPcm in jitterBuffer.pollReady()) {
+                        track?.write(orderedPcm, 0, orderedPcm.size)
+                        _downlinkFrames.tryEmit(
+                            AudioFrame(orderedPcm, sampleRate, StreamDirection.DOWNLINK_REMOTE)
+                        )
+                    }
                 }
 
                 if (totalPackets % 25 == 0) {
@@ -419,6 +432,30 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
     private fun configureAudioFocusForVoip() {
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         audioManager.isMicrophoneMute = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (audioFocusRequest == null) {
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setOnAudioFocusChangeListener { }
+                    .build()
+                audioFocusRequest = req
+                runCatching { audioManager.requestAudioFocus(req) }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching {
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+            }
+        }
     }
 
     private fun setCommunicationDeviceByType(deviceType: Int) {
@@ -615,7 +652,88 @@ class RtpAudioEngine(private val context: Context) : AudioStreamTap {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching { audioManager.clearCommunicationDevice() }
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { req ->
+                runCatching { audioManager.abandonAudioFocusRequest(req) }
+            }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching { audioManager.abandonAudioFocus(null) }
+        }
         audioManager.isMicrophoneMute = false
         audioManager.mode = AudioManager.MODE_NORMAL
+    }
+}
+
+/**
+ * Lightweight adaptive jitter buffer ordering incoming 16-bit RTP sequence numbers
+ * with wraparound awareness and duplicate packet deduplication.
+ */
+internal class RtpJitterBuffer(
+    private val minBufferedFrames: Int = 2,
+    private val maxBufferSize: Int = 12
+) {
+    private val buffer = java.util.TreeMap<Int, ShortArray> { a, b ->
+        compareSeq(a, b)
+    }
+    private var nextExpectedSeq: Int? = null
+    private var primed = false
+
+    fun offer(seq: Int, pcm: ShortArray) {
+        val maskedSeq = seq and 0xFFFF
+        val expected = nextExpectedSeq
+        if (expected != null && compareSeq(maskedSeq, expected) < 0) {
+            // Late or duplicate packet behind playout pointer
+            return
+        }
+        if (!buffer.containsKey(maskedSeq)) {
+            buffer[maskedSeq] = pcm
+        }
+        while (buffer.size > maxBufferSize) {
+            val droppedKey = buffer.firstKey()
+            buffer.remove(droppedKey)
+            nextExpectedSeq = (droppedKey + 1) and 0xFFFF
+        }
+    }
+
+    fun pollReady(): List<ShortArray> {
+        if (buffer.isEmpty()) return emptyList()
+        if (!primed) {
+            if (buffer.size < minBufferedFrames) return emptyList()
+            primed = true
+            nextExpectedSeq = buffer.firstKey()
+        }
+
+        val out = mutableListOf<ShortArray>()
+        var expected = nextExpectedSeq ?: buffer.firstKey()
+
+        while (buffer.isNotEmpty()) {
+            val exact = buffer.remove(expected)
+            if (exact != null) {
+                out.add(exact)
+                expected = (expected + 1) and 0xFFFF
+                nextExpectedSeq = expected
+                continue
+            }
+            // If buffer holds enough lookahead ahead of gap, skip lost sequence
+            if (buffer.size >= minBufferedFrames) {
+                val nextKey = buffer.firstKey()
+                val nextPcm = buffer.remove(nextKey) ?: break
+                out.add(nextPcm)
+                expected = (nextKey + 1) and 0xFFFF
+                nextExpectedSeq = expected
+            } else {
+                break
+            }
+        }
+        return out
+    }
+
+    companion object {
+        fun compareSeq(a: Int, b: Int): Int {
+            val diff = ((a and 0xFFFF) - (b and 0xFFFF)).toShort().toInt()
+            return diff.compareTo(0)
+        }
     }
 }

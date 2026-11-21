@@ -475,6 +475,12 @@ class SipSettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    fun setDoodleThemeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            container.preferencesRepository.setDoodleThemeEnabled(enabled)
+        }
+    }
+
     fun checkSipNetworkHealth(account: SipAccountModel) {
         viewModelScope.launch {
             _isCheckingNetwork.value = true

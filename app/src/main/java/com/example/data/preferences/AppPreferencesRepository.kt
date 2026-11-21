@@ -36,7 +36,8 @@ data class AppSettingsState(
     val enableHardwareAgc: Boolean = true,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val colorPalette: AppColorPalette = AppColorPalette.SAPPHIRE,
-    val dynamicColorEnabled: Boolean = false
+    val dynamicColorEnabled: Boolean = false,
+    val doodleThemeEnabled: Boolean = false
 )
 
 class AppPreferencesRepository(private val context: Context) {
@@ -57,6 +58,7 @@ class AppPreferencesRepository(private val context: Context) {
         val THEME_PREF = stringPreferencesKey("theme_preference")
         val COLOR_PALETTE = stringPreferencesKey("color_palette")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color_enabled")
+        val DOODLE_THEME = booleanPreferencesKey("doodle_theme_enabled")
     }
 
     val settingsFlow: Flow<AppSettingsState> = context.appPrefsDataStore.data.map { prefs ->
@@ -87,7 +89,8 @@ class AppPreferencesRepository(private val context: Context) {
             colorPalette = prefs[Keys.COLOR_PALETTE]?.let {
                 runCatching { AppColorPalette.valueOf(it) }.getOrNull()
             } ?: AppColorPalette.SAPPHIRE,
-            dynamicColorEnabled = prefs[Keys.DYNAMIC_COLOR] ?: false
+            dynamicColorEnabled = prefs[Keys.DYNAMIC_COLOR] ?: false,
+            doodleThemeEnabled = prefs[Keys.DOODLE_THEME] ?: false
         )
     }
 
@@ -150,5 +153,9 @@ class AppPreferencesRepository(private val context: Context) {
 
     suspend fun setDynamicColor(enabled: Boolean) {
         context.appPrefsDataStore.edit { it[Keys.DYNAMIC_COLOR] = enabled }
+    }
+
+    suspend fun setDoodleThemeEnabled(enabled: Boolean) {
+        context.appPrefsDataStore.edit { it[Keys.DOODLE_THEME] = enabled }
     }
 }

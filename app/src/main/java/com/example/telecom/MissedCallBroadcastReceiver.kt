@@ -20,9 +20,11 @@ class MissedCallBroadcastReceiver : BroadcastReceiver() {
         if (intent?.action != TelecomManager.ACTION_SHOW_MISSED_CALLS_NOTIFICATION) return
         val app = context.applicationContext as? OmniCallApplication ?: return
         val container = app.container
+        if (!container.telecomCallManager.isDefaultDialer()) return
 
-        val count = intent.getIntExtra(TelecomManager.EXTRA_NOTIFICATION_COUNT, 0)
+        val count = intent.getIntExtra(TelecomManager.EXTRA_NOTIFICATION_COUNT, 0).coerceIn(0, 999)
         val phoneNumber = intent.getStringExtra(TelecomManager.EXTRA_NOTIFICATION_PHONE_NUMBER)
+            ?.take(64)
 
         if (count <= 0) {
             container.callNotificationManager.cancelMissedCallNotifications()

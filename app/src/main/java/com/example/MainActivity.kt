@@ -17,6 +17,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -34,11 +35,13 @@ import androidx.compose.material.icons.rounded.Dialpad
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,9 +49,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -77,6 +82,8 @@ import com.example.ui.settings.BlocklistScreen
 import com.example.ui.settings.HiFiAudioSettingsScreen
 import com.example.ui.settings.SipSettingsScreen
 import com.example.ui.settings.TelephonySettingsScreen
+import com.example.ui.settings.ThemeSettingsScreen
+import com.example.ui.theme.DoodleBackdrop
 import com.example.ui.theme.OmniCallTheme
 import com.example.ui.viewmodel.BlocklistViewModel
 import com.example.ui.viewmodel.ContactsViewModel
@@ -97,6 +104,7 @@ import kotlinx.serialization.Serializable
 @Serializable object RecordingsRoute
 @Serializable object HiFiAudioSettingsRoute
 @Serializable object BlocklistRoute
+@Serializable object ThemeSettingsRoute
 
 private data class NavItem(
     val route: Any,
@@ -145,6 +153,7 @@ class MainActivity : ComponentActivity() {
                     app = app,
                     factory = factory,
                     activityStoreOwner = this@MainActivity,
+                    doodleThemeEnabled = settings.doodleThemeEnabled,
                     initialDialNumber = incomingDialNumber.value,
                     openRecentsTrigger = openRecentsTrigger.intValue,
                     callbackRequest = callbackRequest.value,
@@ -190,7 +199,11 @@ class MainActivity : ComponentActivity() {
 
     private fun extractDialNumber(intent: Intent?): String? {
         val data: Uri = intent?.data ?: return null
-        return if (data.scheme == "tel") data.schemeSpecificPart else null
+        return when (data.scheme?.lowercase()) {
+            "tel" -> data.schemeSpecificPart
+            "sip" -> data.schemeSpecificPart.substringBefore(';')
+            else -> null
+        }
     }
 }
 
@@ -199,6 +212,7 @@ private fun OmniCallRoot(
     app: OmniCallApplication,
     factory: OmniCallViewModelFactory,
     activityStoreOwner: ViewModelStoreOwner,
+    doodleThemeEnabled: Boolean,
     initialDialNumber: String?,
     openRecentsTrigger: Int,
     callbackRequest: CallbackLaunchRequest?,
@@ -237,7 +251,7 @@ private fun OmniCallRoot(
         }
     }
 
-    val promptedDefaultDialerOnce = remember { mutableStateOf(false) }
+    val promptedDefaultDialerOnce = rememberSaveable { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -298,37 +312,14 @@ private fun OmniCallRoot(
     val hasLiveCall = activeCall.lifecycle != CallLifecycleState.IDLE
     val coordinator = app.container.activeCallCoordinator
 
-    // Active / Incoming Call full-screen overlay (replaces Google Phone UI when OmniCall is Default Dialer)
-    if (hasLiveCall && !isCallUiMinimized) {
-        BackHandler {
-            coordinator.minimizeCallUi()
-        }
-        InCallScreen(
-            callState = activeCall,
-            elapsedSeconds = elapsedSeconds,
-            isNearEar = isNearEar,
-            onToggleMute = coordinator::toggleMute,
-            onToggleHold = coordinator::toggleHold,
-            onSelectAudioRoute = coordinator::selectAudioRoute,
-            onToggleRecord = coordinator::toggleManualRecording,
-            onSendDtmf = coordinator::sendDtmf,
-            onAnswer = coordinator::answerIncomingCall,
-            onDecline = coordinator::declineIncomingCall,
-            onEndCall = coordinator::endActiveCall,
-            onCancelAutoRecall = coordinator::cancelAutoRecall,
-            onRecallNow = coordinator::triggerAutoRecallNow,
-            onMinimize = coordinator::minimizeCallUi
-        )
-        return
-    }
-
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val isSettingsSubScreen = currentDestination?.hasRoute(RecordingsRoute::class) == true ||
         currentDestination?.hasRoute(HiFiAudioSettingsRoute::class) == true ||
         currentDestination?.hasRoute(BlocklistRoute::class) == true ||
-        currentDestination?.hasRoute(TelephonySettingsRoute::class) == true
+        currentDestination?.hasRoute(TelephonySettingsRoute::class) == true ||
+        currentDestination?.hasRoute(ThemeSettingsRoute::class) == true
 
     val navigateToTab: (Any) -> Unit = { route ->
         navController.navigate(route) {
@@ -373,11 +364,19 @@ private fun OmniCallRoot(
         )
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useNavRail = maxWidth >= 600.dp
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            DoodleBackdrop(enabled = doodleThemeEnabled)
 
-        Scaffold(
-            contentWindowInsets = WindowInsets.safeDrawing,
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val useNavRail = maxWidth >= 600.dp
+
+                Scaffold(
+                    containerColor = Color.Transparent,
+                    contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
                 if (!useNavRail && !isSettingsSubScreen) {
                     NavigationBar {
@@ -522,7 +521,22 @@ private fun OmniCallRoot(
                             },
                             onOpenTelephonySettings = {
                                 navController.navigate(TelephonySettingsRoute)
+                            },
+                            onOpenThemeSettings = {
+                                navController.navigate(ThemeSettingsRoute)
                             }
+                        )
+                    }
+                    composable<ThemeSettingsRoute> {
+                        val settingsViewModel: SipSettingsViewModel = viewModel(
+                            viewModelStoreOwner = activityStoreOwner,
+                            factory = factory
+                        )
+                        val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+                        ThemeSettingsScreen(
+                            uiState = settingsState,
+                            viewModel = settingsViewModel,
+                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable<TelephonySettingsRoute> {
@@ -607,6 +621,31 @@ private fun OmniCallRoot(
                 onCancelAutoRecall = coordinator::cancelAutoRecall,
                 onRecallNow = coordinator::triggerAutoRecallNow
             )
+        }
+            }
+
+            // Active / Incoming Call full-screen overlay kept over NavHost so tab & scroll state survive calls
+            if (hasLiveCall && !isCallUiMinimized) {
+                BackHandler {
+                    coordinator.minimizeCallUi()
+                }
+                InCallScreen(
+                    callState = activeCall,
+                    elapsedSeconds = elapsedSeconds,
+                    isNearEar = isNearEar,
+                    onToggleMute = coordinator::toggleMute,
+                    onToggleHold = coordinator::toggleHold,
+                    onSelectAudioRoute = coordinator::selectAudioRoute,
+                    onToggleRecord = coordinator::toggleManualRecording,
+                    onSendDtmf = coordinator::sendDtmf,
+                    onAnswer = coordinator::answerIncomingCall,
+                    onDecline = coordinator::declineIncomingCall,
+                    onEndCall = coordinator::endActiveCall,
+                    onCancelAutoRecall = coordinator::cancelAutoRecall,
+                    onRecallNow = coordinator::triggerAutoRecallNow,
+                    onMinimize = coordinator::minimizeCallUi
+                )
+            }
         }
     }
 

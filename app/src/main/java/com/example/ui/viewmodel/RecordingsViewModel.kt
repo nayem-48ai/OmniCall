@@ -1,8 +1,13 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.os.Build
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -43,6 +48,7 @@ class RecordingsViewModel(
 
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     val uiState: StateFlow<RecordingsUiState> = combine(
         container.recordingRepository.recordingsFlow,
@@ -78,8 +84,10 @@ class RecordingsViewModel(
             val mp = mediaPlayer!!
             if (mp.isPlaying) {
                 mp.pause()
+                abandonPlaybackAudioFocus()
                 _playback.update { it.copy(isPlaying = false) }
             } else {
+                requestPlaybackAudioFocus()
                 mp.start()
                 _playback.update { it.copy(isPlaying = true) }
                 startProgressTicker()
@@ -92,33 +100,51 @@ class RecordingsViewModel(
         if (!file.exists()) return
 
         runCatching {
-            val audioManager = getApplication<Application>().getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
-            audioManager?.mode = android.media.AudioManager.MODE_NORMAL
+            val audioManager = getApplication<Application>().getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager?.mode = AudioManager.MODE_NORMAL
+            requestPlaybackAudioFocus()
             val mp = MediaPlayer().apply {
                 setAudioAttributes(
-                    android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
                 setDataSource(file.absolutePath)
-                prepare()
+                setOnPreparedListener { readyMp ->
+                    if (mediaPlayer === readyMp) {
+                        readyMp.start()
+                        _playback.value = PlaybackState(
+                            activeRecordingId = item.id,
+                            isPlaying = true,
+                            positionMs = 0,
+                            durationMs = readyMp.duration.coerceAtLeast(item.durationMs.toInt())
+                        )
+                        startProgressTicker()
+                    }
+                }
+                setOnErrorListener { _, _, _ ->
+                    stopPlayback()
+                    true
+                }
                 setOnCompletionListener {
+                    abandonPlaybackAudioFocus()
                     _playback.update {
                         it.copy(isPlaying = false, positionMs = 0)
                     }
                     progressJob?.cancel()
                 }
-                start()
             }
             mediaPlayer = mp
             _playback.value = PlaybackState(
                 activeRecordingId = item.id,
-                isPlaying = true,
+                isPlaying = false,
                 positionMs = 0,
-                durationMs = mp.duration.coerceAtLeast(item.durationMs.toInt())
+                durationMs = item.durationMs.toInt()
             )
-            startProgressTicker()
+            mp.prepareAsync()
+        }.onFailure {
+            stopPlayback()
         }
     }
 
@@ -168,11 +194,51 @@ class RecordingsViewModel(
         progressJob?.cancel()
         progressJob = null
         runCatching {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
+            mediaPlayer?.let { mp ->
+                if (mp.isPlaying) mp.stop()
+                mp.release()
+            }
         }
         mediaPlayer = null
+        abandonPlaybackAudioFocus()
         _playback.value = PlaybackState()
+    }
+
+    private fun requestPlaybackAudioFocus() {
+        val audioManager = getApplication<Application>().getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attrs)
+                .build()
+            audioFocusRequest = req
+            runCatching { audioManager.requestAudioFocus(req) }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching {
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+            }
+        }
+    }
+
+    private fun abandonPlaybackAudioFocus() {
+        val audioManager = getApplication<Application>().getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { req ->
+                runCatching { audioManager.abandonAudioFocusRequest(req) }
+            }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching { audioManager.abandonAudioFocus(null) }
+        }
     }
 
     override fun onCleared() {

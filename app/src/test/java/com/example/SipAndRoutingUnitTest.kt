@@ -1,7 +1,9 @@
 package com.example
 
+import android.media.AudioManager
 import android.telecom.DisconnectCause
 import com.example.audio.AudioCodecUtils
+import com.example.audio.RtpJitterBuffer
 import com.example.data.preferences.AppSettingsState
 import com.example.data.repository.BlocklistRepository
 import com.example.data.repository.CallLogItem
@@ -17,13 +19,17 @@ import com.example.domain.model.RecordingType
 import com.example.domain.model.SimSlotInfo
 import com.example.domain.model.SipAccountModel
 import com.example.domain.model.SipBalancePreset
+import com.example.domain.model.SipRegistrationStatus
 import com.example.domain.model.SipTransport
 import com.example.sip.BalanceResponseParser
+import com.example.sip.SipBalanceFetcher
 import com.example.sip.SipClientEngine
 import com.example.sip.SipMessageCodec
 import com.example.telecom.ActiveCallCoordinator
 import com.example.telecom.CallNotificationManager
+import com.example.telecom.IncomingRingerController
 import com.example.telecom.MissedCallRecord
+import com.example.telecom.RingerPolicy
 import com.example.ui.theme.AppColorPalette
 import com.example.ui.viewmodel.DialerViewModel
 import com.example.ui.viewmodel.EnrichedCallLogItem
@@ -904,6 +910,103 @@ class SipAndRoutingUnitTest {
                 wasConnected = false,
                 endedByLocalUser = false,
                 disconnectCode = DisconnectCause.MISSED
+            )
+        )
+    }
+
+    @Test
+    fun incomingRingerController_respectsSystemAudioProfiles() {
+        assertEquals(
+            RingerPolicy(playRingtone = true, vibrate = true),
+            IncomingRingerController.resolveRingerPolicy(
+                ringerMode = AudioManager.RINGER_MODE_NORMAL,
+                vibrateWhenRinging = true
+            )
+        )
+        assertEquals(
+            RingerPolicy(playRingtone = true, vibrate = false),
+            IncomingRingerController.resolveRingerPolicy(
+                ringerMode = AudioManager.RINGER_MODE_NORMAL,
+                vibrateWhenRinging = false
+            )
+        )
+        assertEquals(
+            RingerPolicy(playRingtone = false, vibrate = true),
+            IncomingRingerController.resolveRingerPolicy(
+                ringerMode = AudioManager.RINGER_MODE_VIBRATE,
+                vibrateWhenRinging = true
+            )
+        )
+        assertEquals(
+            RingerPolicy(playRingtone = false, vibrate = false),
+            IncomingRingerController.resolveRingerPolicy(
+                ringerMode = AudioManager.RINGER_MODE_SILENT,
+                vibrateWhenRinging = true
+            )
+        )
+    }
+
+    @Test
+    fun rtpJitterBuffer_reordersOutOfOrderHandlesWraparoundAndDropsDuplicates() {
+        val jb = RtpJitterBuffer(minBufferedFrames = 2, maxBufferSize = 12)
+        val f65534 = shortArrayOf(1)
+        val f65535 = shortArrayOf(2)
+        val f0 = shortArrayOf(3)
+        val f1 = shortArrayOf(4)
+
+        jb.offer(65535, f65535)
+        // Not yet primed with minBufferedFrames = 2
+        assertTrue(jb.pollReady().isEmpty())
+
+        jb.offer(0, f0)
+        jb.offer(65534, f65534)
+        val ordered = jb.pollReady()
+        assertEquals(listOf<Short>(1, 2, 3), ordered.map { it[0] })
+
+        // Duplicate / late packet behind playout pointer (expected = 1) must be ignored
+        jb.offer(0, shortArrayOf(99))
+        assertTrue(jb.pollReady().isEmpty())
+
+        // Subsequent in-sequence packet plays normally
+        jb.offer(1, f1)
+        val next = jb.pollReady()
+        assertEquals(listOf<Short>(4), next.map { it[0] })
+    }
+
+    @Test
+    fun sipStandbyStatusAndDoodleThemeDefault_matchExpectedBehavior() {
+        assertEquals("Outbound Ready", SipRegistrationStatus.STANDBY.label)
+        assertFalse(AppSettingsState().doodleThemeEnabled)
+    }
+
+    @Test
+    fun sipBalanceFetcher_enforcesHttpsAndSafeSameOriginRedirects() {
+        assertNotNull(SipBalanceFetcher.validateBalanceUrl("https://icctalk.com:2020/OTTSSO/login"))
+        assertNull(SipBalanceFetcher.validateBalanceUrl("http://icctalk.com/OTTSSO/login"))
+        assertNull(SipBalanceFetcher.validateBalanceUrl("https:///path"))
+
+        assertTrue(
+            SipBalanceFetcher.isSafeRedirectTarget(
+                "https://icctalk.com:2020/OTTSSO/login",
+                "https://icctalk.com:2020/OTTSSO/dashboard"
+            )
+        )
+        assertTrue(
+            SipBalanceFetcher.isSafeRedirectTarget(
+                "https://icctalk.com:2020/OTTSSO/login",
+                "https://sso.icctalk.com/session"
+            )
+        )
+        assertFalse(
+            SipBalanceFetcher.isSafeRedirectTarget(
+                "https://icctalk.com:2020/OTTSSO/login",
+                "http://icctalk.com/downgrade"
+            )
+        )
+        assertFalse(
+            SipBalanceFetcher.isSafeRedirectTarget(
+                "https://icctalk.com:2020/OTTSSO/login",
+                "https://evil-icctalk.com/steal"
             )
         )
     }

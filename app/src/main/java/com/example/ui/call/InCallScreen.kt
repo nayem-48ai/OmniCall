@@ -140,6 +140,7 @@ fun InCallScreen(
     var showDtmfPad by remember { mutableStateOf(false) }
     var enteredDtmfDigits by remember { mutableStateOf("") }
     var showAudioMenu by remember { mutableStateOf(false) }
+    var showAiAgentInfo by remember { mutableStateOf(false) }
 
     val pulseTransition = rememberInfiniteTransition(label = "call_pulse")
     val pulseAlpha by pulseTransition.animateFloat(
@@ -465,6 +466,22 @@ fun InCallScreen(
                             color = Color.White.copy(alpha = 0.78f)
                         )
                     }
+
+                    AnimatedVisibility(visible = showAiAgentInfo) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.White.copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                text = "Phase 2 AI Call Agent hook ready",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.White,
+                                modifier = Modifier
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .testTag("in_call_ai_hook_status")
+                            )
+                        }
+                    }
                 }
             }
 
@@ -709,8 +726,8 @@ fun InCallScreen(
                                 CallControlTile(
                                     icon = Icons.Rounded.SmartToy,
                                     label = "Tap Ready",
-                                    active = false,
-                                    onClick = { /* Phase 2 AI Agent Tap hook indicator */ },
+                                    active = showAiAgentInfo,
+                                    onClick = { showAiAgentInfo = !showAiAgentInfo },
                                     testTag = "in_call_ai_hook_badge"
                                 )
                             }

@@ -21,11 +21,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.NetworkCheck
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PermDeviceInformation
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
@@ -48,10 +49,10 @@ import androidx.compose.material.icons.rounded.SimCard
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WifiCalling3
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -64,6 +65,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -73,7 +75,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -89,10 +90,8 @@ import com.example.domain.model.SipRegistrationStatus
 import com.example.sip.SipNetworkHealthResult
 import com.example.telecom.PhoneInfoLaunchTarget
 import com.example.telecom.PhoneInfoLauncher
-import com.example.ui.theme.AppColorPalette
 import com.example.ui.theme.SignalConnected
 import com.example.ui.theme.SignalWarning
-import com.example.ui.theme.ThemePreference
 import com.example.ui.viewmodel.SipFormState
 import com.example.ui.viewmodel.SipSettingsUiState
 import com.example.ui.viewmodel.SipSettingsViewModel
@@ -107,6 +106,7 @@ fun SipSettingsScreen(
     onOpenHiFiAudioSettings: () -> Unit,
     onOpenBlocklist: () -> Unit,
     onOpenTelephonySettings: () -> Unit,
+    onOpenThemeSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val env = uiState.environment
@@ -116,6 +116,7 @@ fun SipSettingsScreen(
     val clipboardManager = LocalClipboardManager.current
     var phoneInfoNotice by remember { mutableStateOf<String?>(null) }
     var copiedDialCode by remember { mutableStateOf(false) }
+    var pendingDeleteAccount by remember { mutableStateOf<SipAccountModel?>(null) }
 
     Box(
         modifier = modifier
@@ -540,7 +541,7 @@ fun SipSettingsScreen(
                                     onReRegister = { viewModel.reRegisterAccount(acc) },
                                     onSetDefault = { viewModel.setDefaultSipAccount(acc.id) },
                                     onToggleEnabled = { viewModel.toggleAccountEnabled(acc, it) },
-                                    onDelete = { viewModel.deleteAccount(acc.id) }
+                                    onDelete = { pendingDeleteAccount = acc }
                                 )
                             }
 
@@ -619,94 +620,74 @@ fun SipSettingsScreen(
                 }
             }
 
-            // 4. Theme & Appearance
+            // 4. Theme & Appearance Entry Card (opens ThemeSettingsScreen with Doodle Theme)
             item {
-                SettingsSectionCard(title = "Appearance") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ThemePreference.entries.forEach { pref ->
-                            FilterChip(
-                                selected = uiState.settings.themePreference == pref,
-                                onClick = { viewModel.setThemePreference(pref) },
-                                label = { Text(pref.name.lowercase().replaceFirstChar { it.uppercase() }) },
-                                modifier = Modifier.testTag("theme_pref_${pref.name.lowercase()}")
+                val activeBrightness = uiState.settings.themePreference.name.lowercase()
+                    .replaceFirstChar { it.uppercase() }
+                val activePaletteLabel = if (uiState.settings.dynamicColorEnabled) {
+                    "Dynamic"
+                } else {
+                    uiState.settings.colorPalette.label
+                }
+                val doodleLabel = if (uiState.settings.doodleThemeEnabled) "Doodle On" else "Doodle Off"
+
+                SettingsSectionCard(
+                    title = "Appearance",
+                    onClick = onOpenThemeSettings,
+                    cardTestTag = "settings_open_theme_card",
+                    trailingAction = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (uiState.settings.dynamicColorEnabled) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            uiState.settings.colorPalette.swatchHex
+                                        }
+                                    )
+                            )
+                            Text(
+                                text = activePaletteLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                contentDescription = "Open Appearance & Theme",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "Color Theme",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(AppColorPalette.entries, key = { it.name }) { palette ->
-                            val selected = !uiState.settings.dynamicColorEnabled &&
-                                uiState.settings.colorPalette == palette
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (selected) {
-                                    palette.swatchHex.copy(alpha = 0.16f)
-                                } else {
-                                    MaterialTheme.colorScheme.surface
-                                },
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .border(
-                                        width = if (selected) 1.5.dp else 1.dp,
-                                        color = if (selected) palette.swatchHex else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                                        shape = RoundedCornerShape(16.dp)
-                                    )
-                                    .clickable { viewModel.setColorPalette(palette) }
-                                    .testTag("color_palette_${palette.name.lowercase()}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(22.dp)
-                                            .clip(CircleShape)
-                                            .background(palette.swatchHex),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (selected) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Check,
-                                                contentDescription = "${palette.label} selected",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = palette.label,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                }
-                            }
+                        Icon(
+                            imageVector = Icons.Rounded.Palette,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "$activeBrightness • $activePaletteLabel • $doodleLabel",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Tap to customize Doodle Theme, Dark Mode & 6 color palettes",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    AudioToggleRow(
-                        label = "Material You Dynamic Color",
-                        description = "Adapt palette to device wallpaper (Android 12+)",
-                        checked = uiState.settings.dynamicColorEnabled,
-                        onCheckedChange = { viewModel.setDynamicColor(it) },
-                        testTag = "toggle_dynamic_color"
-                    )
                 }
                 Spacer(modifier = Modifier.height(24.dp))
             }
@@ -744,9 +725,35 @@ fun SipSettingsScreen(
             onSetDefault = { viewModel.setDefaultSipAccount(managed.id) },
             onDelete = {
                 viewModel.closeManageAccount()
-                viewModel.deleteAccount(managed.id)
+                pendingDeleteAccount = managed
             },
             onDismiss = viewModel::closeManageAccount
+        )
+    }
+
+    pendingDeleteAccount?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteAccount = null },
+            title = { Text("Delete SIP Account?") },
+            text = {
+                Text("Remove ${target.displayName} (${target.sipUri}) from OmniCall? You can re-add it anytime.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteAccount(target.id)
+                        pendingDeleteAccount = null
+                    },
+                    modifier = Modifier.testTag("confirm_delete_sip_account")
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteAccount = null }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }
@@ -939,6 +946,7 @@ private fun SipAccountRow(
         SipRegistrationStatus.REGISTERED -> SignalConnected
         SipRegistrationStatus.REGISTERING,
         SipRegistrationStatus.DISCOVERING -> SignalWarning
+        SipRegistrationStatus.STANDBY -> MaterialTheme.colorScheme.primary
         SipRegistrationStatus.ERROR -> MaterialTheme.colorScheme.error
         SipRegistrationStatus.UNREGISTERED -> MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -1137,6 +1145,7 @@ private fun SipAccountManageSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -1386,6 +1395,7 @@ private fun SipAutoConfigBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
